@@ -40,6 +40,22 @@ func (m *MockOpenCodeClient) AbortSession(sessionID string) error {
 	return args.Error(0)
 }
 
+func (m *MockOpenCodeClient) ListSessions() ([]opencode.Session, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]opencode.Session), args.Error(1)
+}
+
+func (m *MockOpenCodeClient) Health() (map[string]interface{}, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[string]interface{}), args.Error(1)
+}
+
 func (m *MockOpenCodeClient) ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error {
 	args := m.Called(sessionID, permissionID, response)
 	return args.Error(0)

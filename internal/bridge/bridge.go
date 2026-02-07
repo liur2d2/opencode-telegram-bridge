@@ -22,8 +22,10 @@ type TelegramBot interface {
 
 type OpenCodeClient interface {
 	CreateSession(title *string, parentID *string) (*opencode.Session, error)
+	ListSessions() ([]opencode.Session, error)
 	SendPrompt(sessionID, text string, agent *string) (*opencode.SendPromptResponse, error)
 	AbortSession(sessionID string) error
+	Health() (map[string]interface{}, error)
 	ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error
 }
 
