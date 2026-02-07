@@ -34,23 +34,19 @@ func NewBot(token string, chatID int64) *Bot {
 }
 
 // SendMessage sends a message to the configured chat
-// Automatically splits messages longer than 4096 characters
-func (b *Bot) SendMessage(ctx context.Context, text string) error {
-	// Split message if needed
-	chunks := SplitMessage(text, 4096)
-
-	for _, chunk := range chunks {
-		_, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID:    b.chatID,
-			Text:      chunk,
-			ParseMode: "MarkdownV2",
-		})
-		if err != nil {
-			return fmt.Errorf("failed to send message: %w", err)
-		}
+// Returns the message ID for later editing
+// NOTE: Does NOT automatically split - caller must handle long messages
+func (b *Bot) SendMessage(ctx context.Context, text string) (int, error) {
+	msg, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:    b.chatID,
+		Text:      text,
+		ParseMode: "MarkdownV2",
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to send message: %w", err)
 	}
 
-	return nil
+	return msg.ID, nil
 }
 
 // SendMessageWithKeyboard sends a message with an inline keyboard
