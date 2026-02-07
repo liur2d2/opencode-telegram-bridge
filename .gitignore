@@ -32,3 +32,9 @@ Thumbs.db
 # Local env file
 .env
 .env.local
+
+# Built binary
+opencode-telegram
+
+# Debug backup files
+*.debug-backup
