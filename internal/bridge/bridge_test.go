@@ -366,5 +366,9 @@ func TestBridgeThinkingIndicator(t *testing.T) {
 	err := bridge.HandleUserMessage(ctx, "Hello")
 
 	assert.NoError(t, err)
+
+	// Wait for debounce timer to fire (100ms + buffer)
+	time.Sleep(150 * time.Millisecond)
+
 	mockTG.AssertCalled(t, "SendMessage", ctx, "⏳ Processing...")
 }

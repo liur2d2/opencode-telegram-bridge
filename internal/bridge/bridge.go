@@ -120,16 +120,8 @@ func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
 
 	// Check if session is busy
 	if b.state.GetSessionStatus(sessionID) == state.SessionBusy {
-		// Buffer the message instead of rejecting
-		buf := &DebounceBuffer{
-			messages:     []string{text},
-			lastReceived: time.Now(),
-		}
-		b.debounceBuffers.Store(sessionID, buf)
-		buf.timer = time.AfterFunc(b.debounceMs, func() {
-			b.flushDebounceBuffer(sessionID)
-		})
-		return nil
+		_, err := b.tgBot.SendMessage(ctx, "⏳ Still processing your previous request...")
+		return err
 	}
 
 	// Session is idle - create first buffer and start debouncing

@@ -31,10 +31,10 @@ func main() {
 		log.Fatalf("Invalid TELEGRAM_CHAT_ID (must be a number): %v", err)
 	}
 
-	// Parse debounce milliseconds
+	// Parse debounce milliseconds with validation
 	debounceMs, err := strconv.ParseInt(debounceStr, 10, 64)
-	if err != nil {
-		log.Fatalf("Invalid TELEGRAM_DEBOUNCE_MS (must be a number): %v", err)
+	if err != nil || debounceMs < 0 || debounceMs > 3000 {
+		debounceMs = 1000
 	}
 	debounceDuration := time.Duration(debounceMs) * time.Millisecond
 
