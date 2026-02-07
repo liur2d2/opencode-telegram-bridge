@@ -12,29 +12,25 @@ import (
 type Bot struct {
 	bot    *bot.Bot
 	chatID int64
-	token  string
 }
 
 // NewBot creates a new Telegram bot instance
 func NewBot(token string, chatID int64) *Bot {
 	opts := []bot.Option{
-		bot.WithSkipGetMe(),
+		bot.WithSkipGetMe(), // Skip validation call to allow testing
 	}
 
 	b, err := bot.New(token, opts...)
 	if err != nil {
+		// In production, we'd return the error, but for now we'll panic
+		// since the bot is critical for operation
 		panic(fmt.Sprintf("failed to create bot: %v", err))
 	}
 
 	return &Bot{
 		bot:    b,
 		chatID: chatID,
-		token:  token,
 	}
-}
-
-func (b *Bot) Token() string {
-	return b.token
 }
 
 // SendMessage sends a message to the configured chat
@@ -169,48 +165,5 @@ func (b *Bot) RegisterCallbackHandler(prefix string, handler CallbackHandler) {
 
 		b.AnswerCallback(ctx, update.CallbackQuery.ID)
 		handler(ctx, update.CallbackQuery.ID, update.CallbackQuery.Data)
-	})
-}
-
-type PhotoHandler func(ctx context.Context, photos []models.PhotoSize, caption string, botToken string)
-
-func (b *Bot) RegisterPhotoHandler(handler PhotoHandler) {
-	b.bot.RegisterHandlerMatchFunc(func(update *models.Update) bool {
-		return update.Message != nil && update.Message.Photo != nil && len(update.Message.Photo) > 0
-	}, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
-		defer func() {
-			if r := recover(); r != nil {
-				fmt.Printf("[PANIC] Photo handler panicked: %v\n", r)
-			}
-		}()
-
-		caption := update.Message.Caption
-
-		handler(ctx, update.Message.Photo, caption, b.token)
-	})
-}
-
-type UnsupportedMediaHandler func(ctx context.Context)
-
-func (b *Bot) RegisterUnsupportedMediaHandler(handler UnsupportedMediaHandler) {
-	b.bot.RegisterHandlerMatchFunc(func(update *models.Update) bool {
-		if update.Message == nil {
-			return false
-		}
-		return update.Message.Audio != nil ||
-			update.Message.Document != nil ||
-			update.Message.Video != nil ||
-			update.Message.Voice != nil ||
-			update.Message.VideoNote != nil ||
-			update.Message.Sticker != nil ||
-			update.Message.Animation != nil
-	}, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
-		defer func() {
-			if r := recover(); r != nil {
-				fmt.Printf("[PANIC] Unsupported media handler panicked: %v\n", r)
-			}
-		}()
-
-		handler(ctx)
 	})
 }

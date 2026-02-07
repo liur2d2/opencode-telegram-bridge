@@ -177,17 +177,22 @@ func (c *Client) AbortSession(sessionID string) error {
 	return nil
 }
 
-// SendPrompt sends a prompt to a session
+// SendPrompt sends a prompt to a session with text
 func (c *Client) SendPrompt(sessionID, text string, agent *string) (*SendPromptResponse, error) {
+	return c.SendPromptWithParts(sessionID, []interface{}{
+		TextPartInput{
+			Type: "text",
+			Text: text,
+		},
+	}, agent)
+}
+
+// SendPromptWithParts sends a prompt to a session with mixed parts (text + images)
+func (c *Client) SendPromptWithParts(sessionID string, parts []interface{}, agent *string) (*SendPromptResponse, error) {
 	reqBody := SendPromptRequest{
 		Agent:  agent,
 		System: nil,
-		Parts: []TextPartInput{
-			{
-				Type: "text",
-				Text: text,
-			},
-		},
+		Parts:  parts,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)

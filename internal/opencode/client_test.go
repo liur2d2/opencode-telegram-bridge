@@ -157,11 +157,15 @@ func TestClient_SendPrompt(t *testing.T) {
 		if len(req.Parts) != 1 {
 			t.Fatalf("Expected 1 part, got %d", len(req.Parts))
 		}
-		if req.Parts[0].Type != "text" {
-			t.Errorf("Expected part type 'text', got %s", req.Parts[0].Type)
+		part, ok := req.Parts[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("Expected part to be map[string]interface{}, got %T", req.Parts[0])
 		}
-		if req.Parts[0].Text != "Hello OpenCode" {
-			t.Errorf("Expected text 'Hello OpenCode', got %s", req.Parts[0].Text)
+		if part["type"] != "text" {
+			t.Errorf("Expected part type 'text', got %v", part["type"])
+		}
+		if part["text"] != "Hello OpenCode" {
+			t.Errorf("Expected text 'Hello OpenCode', got %v", part["text"])
 		}
 		if req.Agent != nil && *req.Agent != "build" {
 			t.Errorf("Expected agent 'build', got %v", *req.Agent)

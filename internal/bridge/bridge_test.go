@@ -109,6 +109,11 @@ func (m *MockTelegramBot) AnswerCallback(ctx context.Context, callbackID string)
 	return args.Error(0)
 }
 
+func (m *MockTelegramBot) SendTyping(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
 func (m *MockTelegramBot) GetEditedMessages(messageID int) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -138,6 +143,7 @@ func TestBridgeHandleUserMessage_CreatesSessionIfNotExists(t *testing.T) {
 		Parts: []interface{}{"Response text"},
 	}, nil)
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
+	mockTG.On("SendTyping", ctx).Return(nil)
 	mockTG.On("EditMessage", ctx, 1, mock.Anything).Return(nil)
 
 	err := bridge.HandleUserMessage(ctx, "Hello")
@@ -197,6 +203,7 @@ func TestBridgeHandleUserMessage_LongResponse(t *testing.T) {
 	}, nil)
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
 	mockTG.On("EditMessage", ctx, 1, mock.Anything).Return(nil)
+	mockTG.On("SendTyping", ctx).Return(nil)
 	mockTG.On("SendMessage", ctx, mock.Anything).Return(2, nil)
 
 	err := bridge.HandleUserMessage(ctx, "Hello")
@@ -228,6 +235,7 @@ func TestBridgeHandleUserMessage_NoSession(t *testing.T) {
 		Parts: []interface{}{"Response"},
 	}, nil)
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
+	mockTG.On("SendTyping", ctx).Return(nil)
 	mockTG.On("EditMessage", ctx, 1, mock.Anything).Return(nil)
 
 	assert.Equal(t, "", appState.GetCurrentSession())
@@ -251,6 +259,7 @@ func TestBridgeHandleUserMessage_SessionError(t *testing.T) {
 	ctx := context.Background()
 
 	mockOC.On("SendPrompt", "ses_123", "Hello", mock.Anything).Return(nil, fmt.Errorf("connection failed"))
+	mockTG.On("SendTyping", ctx).Return(nil)
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
 	mockTG.On("EditMessage", ctx, 1, mock.MatchedBy(func(msg string) bool {
 		return strings.Contains(msg, "Error") && strings.Contains(msg, "connection failed")
@@ -340,6 +349,7 @@ func TestBridgeThinkingIndicator(t *testing.T) {
 	}, nil)
 
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
+	mockTG.On("SendTyping", ctx).Return(nil)
 	mockTG.On("EditMessage", ctx, 1, mock.Anything).Return(nil)
 
 	err := bridge.HandleUserMessage(ctx, "Hello")

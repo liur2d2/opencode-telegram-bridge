@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-telegram/bot/models"
 
@@ -18,6 +19,7 @@ type TelegramBot interface {
 	SendMessageWithKeyboard(ctx context.Context, text string, keyboard *models.InlineKeyboardMarkup) (int, error)
 	EditMessage(ctx context.Context, messageID int, text string) error
 	AnswerCallback(ctx context.Context, callbackID string) error
+	SendTyping(ctx context.Context) error
 }
 
 type OpenCodeClient interface {
@@ -84,6 +86,9 @@ func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
 
 	b.thinkingMsgs.Store(sessionID, thinkingMsgID)
 
+	// Send initial typing indicator before launching async processing
+	_ = b.tgBot.SendTyping(ctx)
+
 	go b.sendPromptAsync(context.Background(), sessionID, text, thinkingMsgID)
 
 	return nil
@@ -91,6 +96,24 @@ func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
 
 func (b *Bridge) sendPromptAsync(ctx context.Context, sessionID, text string, thinkingMsgID int) {
 	agent := b.state.GetCurrentAgent()
+
+	// Create done channel to signal typing goroutine to stop
+	done := make(chan struct{})
+	defer close(done)
+
+	// Launch typing indicator goroutine that refreshes every 4 seconds
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = b.tgBot.SendTyping(context.Background())
+			case <-done:
+				return
+			}
+		}
+	}()
 
 	resp, err := b.ocClient.SendPrompt(sessionID, text, &agent)
 	if err != nil {

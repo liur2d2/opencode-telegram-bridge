@@ -98,11 +98,18 @@ type TextPartInput struct {
 	Text string `json:"text"`
 }
 
+// ImagePartInput represents an image part in a message
+type ImagePartInput struct {
+	Type     string `json:"type"`     // "image"
+	Image    string `json:"image"`    // base64 encoded image data
+	MimeType string `json:"mimeType"` // "image/jpeg" or "image/png"
+}
+
 // SendPromptRequest is the request body for sending a prompt
 type SendPromptRequest struct {
-	Agent  *string         `json:"agent,omitempty"`  // Agent type (per-message, not per-session)
-	Parts  []TextPartInput `json:"parts"`            // Message parts
-	System *string         `json:"system,omitempty"` // System message
+	Agent  *string       `json:"agent,omitempty"`  // Agent type (per-message, not per-session)
+	Parts  []interface{} `json:"parts"`            // Message parts (TextPartInput or ImagePartInput)
+	System *string       `json:"system,omitempty"` // System message
 }
 
 // AssistantMessage represents the response from sending a prompt
