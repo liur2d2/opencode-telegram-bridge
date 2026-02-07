@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-telegram/bot/models"
 	"github.com/stretchr/testify/assert"
@@ -58,6 +59,11 @@ func (m *MockOpenCodeClient) Health() (map[string]interface{}, error) {
 
 func (m *MockOpenCodeClient) ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error {
 	args := m.Called(sessionID, permissionID, response)
+	return args.Error(0)
+}
+
+func (m *MockOpenCodeClient) ReplyQuestion(requestID string, answers []opencode.QuestionAnswer) error {
+	args := m.Called(requestID, answers)
 	return args.Error(0)
 }
 
@@ -114,6 +120,11 @@ func (m *MockTelegramBot) SendTyping(ctx context.Context) error {
 	return args.Error(0)
 }
 
+func (m *MockTelegramBot) EditMessageKeyboard(ctx context.Context, messageID int, keyboard *models.InlineKeyboardMarkup) error {
+	args := m.Called(ctx, messageID, keyboard)
+	return args.Error(0)
+}
+
 func (m *MockTelegramBot) GetEditedMessages(messageID int) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -126,7 +137,7 @@ func TestBridgeHandleUserMessage_CreatesSessionIfNotExists(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 
 	ctx := context.Background()
 
@@ -161,7 +172,7 @@ func TestBridgeHandleUserMessage_BusySession(t *testing.T) {
 	appState.SetCurrentSession("ses_123")
 	appState.SetSessionStatus("ses_123", state.SessionBusy)
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 
 	ctx := context.Background()
 
@@ -180,7 +191,7 @@ func TestBridgeHandleUserMessage_LongResponse(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	session := &opencode.Session{
@@ -218,7 +229,7 @@ func TestBridgeHandleUserMessage_NoSession(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	session := &opencode.Session{
@@ -255,7 +266,7 @@ func TestBridgeHandleUserMessage_SessionError(t *testing.T) {
 	appState.SetCurrentSession("ses_123")
 	appState.SetSessionStatus("ses_123", state.SessionIdle)
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	mockOC.On("SendPrompt", "ses_123", "Hello", mock.Anything).Return(nil, fmt.Errorf("connection failed"))
@@ -279,7 +290,7 @@ func TestBridgeHandleSSEEvent_SessionIdle(t *testing.T) {
 	appState.SetCurrentSession("ses_123")
 	appState.SetSessionStatus("ses_123", state.SessionBusy)
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 
 	event := opencode.Event{
 		Type: "session.idle",
@@ -301,7 +312,7 @@ func TestBridgeHandleSSEEvent_SessionError(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	mockTG.On("SendMessage", ctx, mock.MatchedBy(func(msg string) bool {
@@ -331,7 +342,7 @@ func TestBridgeThinkingIndicator(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	session := &opencode.Session{

@@ -20,6 +20,7 @@ func main() {
 	chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")
 	ocBaseURL := getenv("OPENCODE_BASE_URL", "http://localhost:54321")
 	ocDirectory := getenv("OPENCODE_DIRECTORY", ".")
+	debounceStr := getenv("TELEGRAM_DEBOUNCE_MS", "1000")
 
 	if botToken == "" || chatIDStr == "" {
 		log.Fatal("Missing required environment variables: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID")
@@ -30,10 +31,18 @@ func main() {
 		log.Fatalf("Invalid TELEGRAM_CHAT_ID (must be a number): %v", err)
 	}
 
+	// Parse debounce milliseconds
+	debounceMs, err := strconv.ParseInt(debounceStr, 10, 64)
+	if err != nil {
+		log.Fatalf("Invalid TELEGRAM_DEBOUNCE_MS (must be a number): %v", err)
+	}
+	debounceDuration := time.Duration(debounceMs) * time.Millisecond
+
 	log.Printf("Starting OpenCode-Telegram Bridge...")
 	log.Printf("OpenCode URL: %s", ocBaseURL)
 	log.Printf("OpenCode Directory: %s", ocDirectory)
 	log.Printf("Telegram Chat ID: %d", chatID)
+	log.Printf("Debounce Duration: %dms", debounceMs)
 
 	ocConfig := opencode.Config{
 		BaseURL:   ocBaseURL,
@@ -48,7 +57,7 @@ func main() {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridgeInstance := bridge.NewBridge(ocClient, tgBot, appState, registry)
+	bridgeInstance := bridge.NewBridge(ocClient, tgBot, appState, registry, debounceDuration)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

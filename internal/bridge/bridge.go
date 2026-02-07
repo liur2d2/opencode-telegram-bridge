@@ -29,6 +29,7 @@ type OpenCodeClient interface {
 	AbortSession(sessionID string) error
 	Health() (map[string]interface{}, error)
 	ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error
+	ReplyQuestion(requestID string, answers []opencode.QuestionAnswer) error
 }
 
 type PermissionState struct {
@@ -37,24 +38,50 @@ type PermissionState struct {
 	MessageID    int
 }
 
+type QuestionState struct {
+	RequestID       string
+	SessionID       string
+	MessageID       int
+	QuestionIndex   int
+	QuestionInfo    opencode.QuestionInfo
+	SelectedOptions map[int]bool // For multi-select tracking
+	WaitingCustom   bool         // True when waiting for custom text input
+}
+
+type DebounceBuffer struct {
+	messages     []string
+	lastReceived time.Time
+	timer        *time.Timer
+	mu           sync.Mutex
+}
+
 type Bridge struct {
-	ocClient OpenCodeClient
-	tgBot    TelegramBot
-	state    *state.AppState
-	registry *state.IDRegistry
+	ocClient        OpenCodeClient
+	tgBot           TelegramBot
+	state           *state.AppState
+	registry        *state.IDRegistry
+	debounceMs      time.Duration
+	debounceBuffers sync.Map
 
 	thinkingMsgs sync.Map
 	permissions  sync.Map
+	questions    sync.Map
 	lastUpdate   sync.Map
 	updateMu     sync.Mutex
 }
 
-func NewBridge(ocClient OpenCodeClient, tgBot TelegramBot, appState *state.AppState, registry *state.IDRegistry) *Bridge {
+func NewBridge(ocClient OpenCodeClient, tgBot TelegramBot, appState *state.AppState, registry *state.IDRegistry, debounceMs time.Duration) *Bridge {
+	// Validate debounceMs: cap at 3000ms, default to 1000ms if <= 0 or > 3000ms
+	if debounceMs <= 0 || debounceMs > 3000*time.Millisecond {
+		debounceMs = 1000 * time.Millisecond
+	}
+
 	return &Bridge{
-		ocClient: ocClient,
-		tgBot:    tgBot,
-		state:    appState,
-		registry: registry,
+		ocClient:   ocClient,
+		tgBot:      tgBot,
+		state:      appState,
+		registry:   registry,
+		debounceMs: debounceMs,
 	}
 }
 
@@ -71,17 +98,84 @@ func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
 		b.state.SetCurrentSession(sessionID)
 	}
 
+	// Check if we have a buffer for this session
+	bufVal, ok := b.debounceBuffers.Load(sessionID)
+	if ok {
+		// Buffer exists - add message and extend timer
+		buf := bufVal.(*DebounceBuffer)
+		buf.mu.Lock()
+		buf.messages = append(buf.messages, text)
+		buf.lastReceived = time.Now()
+		buf.mu.Unlock()
+
+		// Stop and restart timer
+		if buf.timer != nil {
+			buf.timer.Stop()
+		}
+		buf.timer = time.AfterFunc(b.debounceMs, func() {
+			b.flushDebounceBuffer(sessionID)
+		})
+		return nil
+	}
+
+	// Check if session is busy
 	if b.state.GetSessionStatus(sessionID) == state.SessionBusy {
-		_, err := b.tgBot.SendMessage(ctx, "⏳ Still processing your previous request...")
-		return err
+		// Buffer the message instead of rejecting
+		buf := &DebounceBuffer{
+			messages:     []string{text},
+			lastReceived: time.Now(),
+		}
+		b.debounceBuffers.Store(sessionID, buf)
+		buf.timer = time.AfterFunc(b.debounceMs, func() {
+			b.flushDebounceBuffer(sessionID)
+		})
+		return nil
+	}
+
+	// Session is idle - create first buffer and start debouncing
+	buf := &DebounceBuffer{
+		messages:     []string{text},
+		lastReceived: time.Now(),
+	}
+	b.debounceBuffers.Store(sessionID, buf)
+	buf.timer = time.AfterFunc(b.debounceMs, func() {
+		b.flushDebounceBuffer(sessionID)
+	})
+
+	return nil
+}
+
+func (b *Bridge) flushDebounceBuffer(sessionID string) {
+	bufVal, ok := b.debounceBuffers.Load(sessionID)
+	if !ok {
+		return
+	}
+	defer b.debounceBuffers.Delete(sessionID)
+
+	buf := bufVal.(*DebounceBuffer)
+	buf.mu.Lock()
+	messages := buf.messages
+	buf.mu.Unlock()
+
+	if len(messages) == 0 {
+		return
+	}
+
+	// Merge messages with newline separator
+	mergedText := strings.Join(messages, "\n")
+
+	// Check session status before sending
+	if b.state.GetSessionStatus(sessionID) == state.SessionBusy {
+		return
 	}
 
 	b.state.SetSessionStatus(sessionID, state.SessionBusy)
 
+	ctx := context.Background()
 	thinkingMsgID, err := b.tgBot.SendMessage(ctx, "⏳ Processing...")
 	if err != nil {
 		b.state.SetSessionStatus(sessionID, state.SessionIdle)
-		return fmt.Errorf("send thinking message: %w", err)
+		return
 	}
 
 	b.thinkingMsgs.Store(sessionID, thinkingMsgID)
@@ -89,9 +183,7 @@ func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
 	// Send initial typing indicator before launching async processing
 	_ = b.tgBot.SendTyping(ctx)
 
-	go b.sendPromptAsync(context.Background(), sessionID, text, thinkingMsgID)
-
-	return nil
+	go b.sendPromptAsync(context.Background(), sessionID, mergedText, thinkingMsgID)
 }
 
 func (b *Bridge) sendPromptAsync(ctx context.Context, sessionID, text string, thinkingMsgID int) {
@@ -174,7 +266,11 @@ func (b *Bridge) HandleSSEEvent(event opencode.Event) {
 		b.handleSessionError(event)
 
 	case "question.asked":
-		_ = event
+		if qaEvent, ok := event.Properties.(*opencode.EventQuestionAsked); ok {
+			if err := b.handleQuestionAsked(*qaEvent); err != nil {
+				b.tgBot.SendMessage(context.Background(), fmt.Sprintf("❌ Error handling question: %v", err))
+			}
+		}
 
 	case "permission.asked":
 		b.handlePermissionAsked(event)
@@ -412,6 +508,9 @@ func (b *Bridge) HandlePermissionCallback(ctx context.Context, shortKey string, 
 
 func (b *Bridge) RegisterHandlers() {
 	b.tgBot.(*telegram.Bot).RegisterTextHandler(func(ctx context.Context, text string) {
+		if b.HandleQuestionCustomInput(ctx, text) {
+			return
+		}
 		if err := b.HandleUserMessage(ctx, text); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
 		}
@@ -505,4 +604,19 @@ func (b *Bridge) RegisterHandlers() {
 		b.state.SetCurrentAgent(agentName)
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
+
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("q:", func(ctx context.Context, callbackID string, data string) {
+		parts := strings.SplitN(data, ":", 3)
+		if len(parts) < 3 {
+			return
+		}
+		shortKey := parts[1]
+		action := strings.Join(parts[2:], ":")
+
+		if err := b.HandleQuestionCallback(ctx, shortKey, action); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
 }

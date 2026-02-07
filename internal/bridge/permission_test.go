@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -17,7 +18,7 @@ func TestHandlePermissionAskedSSE(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 
 	event := opencode.Event{
 		Type: "permission.asked",
@@ -52,7 +53,7 @@ func TestHandlePermissionCallback(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	shortKey := registry.Register("perm_123456", "p", "")
@@ -79,7 +80,7 @@ func TestPermissionMessageContainsPermissionType(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 
 	event := opencode.Event{
 		Type: "permission.asked",
@@ -116,7 +117,7 @@ func TestPermissionAllowOnceResponse(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	shortKey := registry.Register("perm_123", "p", "")
@@ -143,7 +144,7 @@ func TestPermissionAlwaysAllowResponse(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	shortKey := registry.Register("perm_456", "p", "")
@@ -170,7 +171,7 @@ func TestPermissionRejectResponse(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	shortKey := registry.Register("perm_789", "p", "")
@@ -197,7 +198,7 @@ func TestPermissionKeyboardRemovedAfterResponse(t *testing.T) {
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
-	bridge := NewBridge(mockOC, mockTG, appState, registry)
+	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
 	shortKey := registry.Register("perm_999", "p", "")
