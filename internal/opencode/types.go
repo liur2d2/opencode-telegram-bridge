@@ -4,9 +4,8 @@ import "time"
 
 // Config holds OpenCode client configuration
 type Config struct {
-	BaseURL        string
-	Directory      string
-	ServerPassword string
+	BaseURL   string
+	Directory string
 }
 
 // QuestionOption represents a choice in a question

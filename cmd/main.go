@@ -20,7 +20,6 @@ func main() {
 	chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")
 	ocBaseURL := getenv("OPENCODE_BASE_URL", "http://localhost:54321")
 	ocDirectory := getenv("OPENCODE_DIRECTORY", ".")
-	ocPassword := os.Getenv("OPENCODE_SERVER_PASSWORD")
 
 	if botToken == "" || chatIDStr == "" {
 		log.Fatal("Missing required environment variables: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID")
@@ -37,9 +36,8 @@ func main() {
 	log.Printf("Telegram Chat ID: %d", chatID)
 
 	ocConfig := opencode.Config{
-		BaseURL:        ocBaseURL,
-		Directory:      ocDirectory,
-		ServerPassword: ocPassword,
+		BaseURL:   ocBaseURL,
+		Directory: ocDirectory,
 	}
 	ocClient := opencode.NewClient(ocConfig)
 
@@ -63,6 +61,7 @@ func main() {
 	}
 	defer sseConsumer.Close()
 
+	registry.StartCleanup(ctx)
 	bridgeInstance.Start(ctx, sseConsumer)
 	bridgeInstance.RegisterHandlers()
 

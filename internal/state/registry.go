@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -85,4 +86,20 @@ func (r *IDRegistry) setTTL(shortKey string, expiry time.Time) {
 	if _, exists := r.ttl[shortKey]; exists {
 		r.ttl[shortKey] = expiry
 	}
+}
+
+// StartCleanup starts a background goroutine that removes expired entries every 5 minutes.
+func (r *IDRegistry) StartCleanup(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				r.cleanup()
+			}
+		}
+	}()
 }

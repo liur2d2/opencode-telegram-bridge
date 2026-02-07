@@ -180,7 +180,8 @@ func (c *Client) AbortSession(sessionID string) error {
 // SendPrompt sends a prompt to a session
 func (c *Client) SendPrompt(sessionID, text string, agent *string) (*SendPromptResponse, error) {
 	reqBody := SendPromptRequest{
-		Agent: agent,
+		Agent:  agent,
+		System: nil,
 		Parts: []TextPartInput{
 			{
 				Type: "text",

@@ -40,7 +40,7 @@ func (b *Bot) SendMessage(ctx context.Context, text string) (int, error) {
 	msg, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    b.chatID,
 		Text:      text,
-		ParseMode: "MarkdownV2",
+		ParseMode: models.ParseModeHTML,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to send message: %w", err)
@@ -54,7 +54,7 @@ func (b *Bot) SendMessageWithKeyboard(ctx context.Context, text string, keyboard
 		ChatID:      b.chatID,
 		Text:        text,
 		ReplyMarkup: keyboard,
-		ParseMode:   "MarkdownV2",
+		ParseMode:   models.ParseModeHTML,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to send message with keyboard: %w", err)
@@ -69,7 +69,7 @@ func (b *Bot) EditMessage(ctx context.Context, messageID int, text string) error
 		ChatID:    b.chatID,
 		MessageID: messageID,
 		Text:      text,
-		ParseMode: "MarkdownV2",
+		ParseMode: models.ParseModeHTML,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to edit message: %w", err)
@@ -115,9 +115,6 @@ func (b *Bot) RegisterTextHandler(handler TextHandler) {
 			update.Message.Text != "" &&
 			len(update.Message.Text) > 0 &&
 			update.Message.Text[0] != '/'
-		if update.Message != nil {
-			fmt.Printf("[DEBUG] Text message: '%s', isMatch: %v\n", update.Message.Text, isMatch)
-		}
 		return isMatch
 	}, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
 		defer func() {
@@ -126,9 +123,7 @@ func (b *Bot) RegisterTextHandler(handler TextHandler) {
 			}
 		}()
 
-		fmt.Printf("[DEBUG] Calling handler with text: '%s'\n", update.Message.Text)
 		handler(ctx, update.Message.Text)
-		fmt.Printf("[DEBUG] Handler returned for text: '%s'\n", update.Message.Text)
 	})
 }
 
