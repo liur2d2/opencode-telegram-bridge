@@ -21,7 +21,7 @@ func TestClient_Health(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(Config{BaseURL: server.URL})
-	err := client.Health()
+	_, err := client.Health()
 	if err != nil {
 		t.Fatalf("Health() error = %v", err)
 	}

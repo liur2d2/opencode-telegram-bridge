@@ -29,24 +29,28 @@ func NewClient(config Config) *Client {
 	}
 }
 
-// Health checks if the OpenCode server is healthy
-func (c *Client) Health() error {
+func (c *Client) Health() (map[string]interface{}, error) {
 	req, err := http.NewRequest(http.MethodGet, c.config.BaseURL+"/health", nil)
 	if err != nil {
-		return fmt.Errorf("create health request: %w", err)
+		return nil, fmt.Errorf("create health request: %w", err)
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("health check: %w", err)
+		return nil, fmt.Errorf("health check: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check failed with status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("health check failed with status: %d", resp.StatusCode)
 	}
 
-	return nil
+	var healthData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&healthData); err != nil {
+		return map[string]interface{}{"healthy": true}, nil
+	}
+
+	return healthData, nil
 }
 
 // ListSessions retrieves all sessions

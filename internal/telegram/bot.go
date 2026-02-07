@@ -49,19 +49,18 @@ func (b *Bot) SendMessage(ctx context.Context, text string) (int, error) {
 	return msg.ID, nil
 }
 
-// SendMessageWithKeyboard sends a message with an inline keyboard
-func (b *Bot) SendMessageWithKeyboard(ctx context.Context, text string, keyboard *models.InlineKeyboardMarkup) error {
-	_, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
+func (b *Bot) SendMessageWithKeyboard(ctx context.Context, text string, keyboard *models.InlineKeyboardMarkup) (int, error) {
+	msg, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      b.chatID,
 		Text:        text,
 		ReplyMarkup: keyboard,
 		ParseMode:   "MarkdownV2",
 	})
 	if err != nil {
-		return fmt.Errorf("failed to send message with keyboard: %w", err)
+		return 0, fmt.Errorf("failed to send message with keyboard: %w", err)
 	}
 
-	return nil
+	return msg.ID, nil
 }
 
 // EditMessage edits an existing message
