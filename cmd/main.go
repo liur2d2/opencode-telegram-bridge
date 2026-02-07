@@ -52,8 +52,6 @@ func main() {
 
 	bridgeInstance := bridge.NewBridge(ocClient, tgBot, appState, registry)
 
-	_ = bridgeInstance
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -66,6 +64,7 @@ func main() {
 	defer sseConsumer.Close()
 
 	bridgeInstance.Start(ctx, sseConsumer)
+	bridgeInstance.RegisterHandlers()
 
 	go func() {
 		log.Println("Starting Telegram bot polling...")

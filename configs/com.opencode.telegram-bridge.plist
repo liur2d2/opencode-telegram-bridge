@@ -6,18 +6,18 @@
 	<string>com.opencode.telegram-bridge</string>
 
 	<key>Program</key>
-	<string>/Users/YOUR_USERNAME/opencode-telegram/opencode-telegram</string>
+	<string>/Users/master/opencode-telegram/opencode-telegram</string>
 
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>TELEGRAM_BOT_TOKEN</key>
-		<string>YOUR_BOT_TOKEN_HERE</string>
+		<string>8332230070:AAFPVIBjnOhE9LqL3n7y2-F6LErbLMJWBR0</string>
 		<key>TELEGRAM_CHAT_ID</key>
-		<string>YOUR_CHAT_ID_HERE</string>
+		<string>708020063</string>
 		<key>OPENCODE_BASE_URL</key>
 		<string>http://localhost:54321</string>
 		<key>OPENCODE_DIRECTORY</key>
-		<string>/Users/YOUR_USERNAME/.config/opencode</string>
+		<string>/Users/master/.config/opencode</string>
 	</dict>
 
 	<key>RunAtLoad</key>
@@ -30,12 +30,12 @@
 	</dict>
 
 	<key>StandardOutPath</key>
-	<string>/Users/YOUR_USERNAME/Library/Logs/opencode-telegram/stdout.log</string>
+	<string>/Users/master/Library/Logs/opencode-telegram/stdout.log</string>
 
 	<key>StandardErrorPath</key>
-	<string>/Users/YOUR_USERNAME/Library/Logs/opencode-telegram/stderr.log</string>
+	<string>/Users/master/Library/Logs/opencode-telegram/stderr.log</string>
 
 	<key>WorkingDirectory</key>
-	<string>/Users/YOUR_USERNAME/opencode-telegram</string>
+	<string>/Users/master/opencode-telegram</string>
 </dict>
 </plist>

@@ -104,3 +104,57 @@ func (b *Bot) RegisterCallbackPrefix(prefix string, handler bot.HandlerFunc) {
 func (b *Bot) Start(ctx context.Context) {
 	b.bot.Start(ctx)
 }
+
+type TextHandler func(ctx context.Context, text string)
+type CommandHandler func(ctx context.Context, args string)
+type CallbackHandler func(ctx context.Context, callbackID, data string)
+
+func (b *Bot) RegisterTextHandler(handler TextHandler) {
+	b.bot.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+		isMatch := update.Message != nil &&
+			update.Message.Text != "" &&
+			len(update.Message.Text) > 0 &&
+			update.Message.Text[0] != '/'
+		if update.Message != nil {
+			fmt.Printf("[DEBUG] Text message: '%s', isMatch: %v\n", update.Message.Text, isMatch)
+		}
+		return isMatch
+	}, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("[PANIC] Handler panicked: %v\n", r)
+			}
+		}()
+
+		fmt.Printf("[DEBUG] Calling handler with text: '%s'\n", update.Message.Text)
+		handler(ctx, update.Message.Text)
+		fmt.Printf("[DEBUG] Handler returned for text: '%s'\n", update.Message.Text)
+	})
+}
+
+func (b *Bot) RegisterCommandHandler(command string, handler CommandHandler) {
+	b.bot.RegisterHandler(bot.HandlerTypeMessageText, "/"+command, bot.MatchTypePrefix, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
+		if update.Message == nil {
+			return
+		}
+
+		text := update.Message.Text
+		args := ""
+		if len(text) > len(command)+2 {
+			args = text[len(command)+2:]
+		}
+
+		handler(ctx, args)
+	})
+}
+
+func (b *Bot) RegisterCallbackHandler(prefix string, handler CallbackHandler) {
+	b.bot.RegisterHandler(bot.HandlerTypeCallbackQueryData, prefix, bot.MatchTypePrefix, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
+		if update.CallbackQuery == nil {
+			return
+		}
+
+		b.AnswerCallback(ctx, update.CallbackQuery.ID)
+		handler(ctx, update.CallbackQuery.ID, update.CallbackQuery.Data)
+	})
+}

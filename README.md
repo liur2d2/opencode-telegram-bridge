@@ -1,5 +1,7 @@
 # opencode-telegram Bridge
 
+**English** | [繁體中文](README.zh-TW.md)
+
 Telegram ↔ OpenCode bidirectional bridge service. Control OpenCode entirely via Telegram with session management, agent switching, and interactive question/permission prompts.
 
 ## Installation & Deployment
