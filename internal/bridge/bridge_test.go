@@ -75,6 +75,19 @@ func (m *MockOpenCodeClient) ReplyQuestion(requestID string, answers []opencode.
 	return args.Error(0)
 }
 
+func (m *MockOpenCodeClient) GetConfig() (map[string]interface{}, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[string]interface{}), args.Error(1)
+}
+
+func (m *MockOpenCodeClient) TriggerPrompt(sessionID, text string, agent *string) error {
+	args := m.Called(sessionID, text, agent)
+	return args.Error(0)
+}
+
 type MockTelegramBot struct {
 	mock.Mock
 	mu             sync.Mutex
@@ -128,6 +141,25 @@ func (m *MockTelegramBot) SendTyping(ctx context.Context) error {
 	return args.Error(0)
 }
 
+func (m *MockTelegramBot) SendMessagePlain(ctx context.Context, text string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	args := m.Called(ctx, text)
+	m.lastMessageID++
+	m.sentMessages = append(m.sentMessages, text)
+	return m.lastMessageID, args.Error(1)
+}
+
+func (m *MockTelegramBot) EditMessagePlain(ctx context.Context, messageID int, text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	args := m.Called(ctx, messageID, text)
+	m.editedMessages[messageID] = append(m.editedMessages[messageID], text)
+	return args.Error(0)
+}
+
 func (m *MockTelegramBot) EditMessageKeyboard(ctx context.Context, messageID int, keyboard *models.InlineKeyboardMarkup) error {
 	args := m.Called(ctx, messageID, keyboard)
 	return args.Error(0)
@@ -154,13 +186,7 @@ func TestBridgeHandleUserMessage_CreatesSessionIfNotExists(t *testing.T) {
 		Title: "Telegram Chat",
 	}
 	mockOC.On("CreateSession", mock.Anything, mock.Anything).Return(session, nil)
-	mockOC.On("SendPrompt", "ses_123", "Hello", mock.Anything).Return(&opencode.SendPromptResponse{
-		Info: opencode.AssistantMessage{
-			ID:        "msg_456",
-			SessionID: "ses_123",
-		},
-		Parts: []interface{}{"Response text"},
-	}, nil)
+	mockOC.On("TriggerPrompt", "ses_123", "Hello", mock.Anything).Return(nil)
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
 	mockTG.On("SendTyping", ctx).Return(nil)
 	mockTG.On("EditMessage", ctx, 1, mock.Anything).Return(nil)
@@ -213,13 +239,7 @@ func TestBridgeHandleUserMessage_LongResponse(t *testing.T) {
 	}
 
 	mockOC.On("CreateSession", mock.Anything, mock.Anything).Return(session, nil)
-	mockOC.On("SendPrompt", "ses_123", "Hello", mock.Anything).Return(&opencode.SendPromptResponse{
-		Info: opencode.AssistantMessage{
-			ID:        "msg_456",
-			SessionID: "ses_123",
-		},
-		Parts: []interface{}{longText},
-	}, nil)
+	mockOC.On("TriggerPrompt", "ses_123", "Hello", mock.Anything).Return(nil)
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
 	mockTG.On("EditMessage", ctx, 1, mock.Anything).Return(nil)
 	mockTG.On("SendTyping", ctx).Return(nil)
@@ -246,13 +266,7 @@ func TestBridgeHandleUserMessage_NoSession(t *testing.T) {
 	}
 
 	mockOC.On("CreateSession", mock.Anything, mock.Anything).Return(session, nil)
-	mockOC.On("SendPrompt", "ses_new", "First message", mock.Anything).Return(&opencode.SendPromptResponse{
-		Info: opencode.AssistantMessage{
-			ID:        "msg_123",
-			SessionID: "ses_new",
-		},
-		Parts: []interface{}{"Response"},
-	}, nil)
+	mockOC.On("TriggerPrompt", "ses_new", "First message", mock.Anything).Return(nil)
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
 	mockTG.On("SendTyping", ctx).Return(nil)
 	mockTG.On("EditMessage", ctx, 1, mock.Anything).Return(nil)
@@ -277,10 +291,10 @@ func TestBridgeHandleUserMessage_SessionError(t *testing.T) {
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
 	ctx := context.Background()
 
-	mockOC.On("SendPrompt", "ses_123", "Hello", mock.Anything).Return(nil, fmt.Errorf("connection failed"))
+	mockOC.On("TriggerPrompt", "ses_123", "Hello", mock.Anything).Return(fmt.Errorf("connection failed"))
 	mockTG.On("SendTyping", ctx).Return(nil)
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
-	mockTG.On("EditMessage", ctx, 1, mock.MatchedBy(func(msg string) bool {
+	mockTG.On("EditMessagePlain", mock.Anything, 1, mock.MatchedBy(func(msg string) bool {
 		return strings.Contains(msg, "Error") && strings.Contains(msg, "connection failed")
 	})).Return(nil)
 
@@ -359,13 +373,7 @@ func TestBridgeThinkingIndicator(t *testing.T) {
 	}
 
 	mockOC.On("CreateSession", mock.Anything, mock.Anything).Return(session, nil)
-	mockOC.On("SendPrompt", "ses_123", "Hello", mock.Anything).Return(&opencode.SendPromptResponse{
-		Info: opencode.AssistantMessage{
-			ID:        "msg_456",
-			SessionID: "ses_123",
-		},
-		Parts: []interface{}{"Response text"},
-	}, nil)
+	mockOC.On("TriggerPrompt", "ses_123", "Hello", mock.Anything).Return(nil)
 
 	mockTG.On("SendMessage", ctx, "⏳ Processing...").Return(1, nil)
 	mockTG.On("SendTyping", ctx).Return(nil)

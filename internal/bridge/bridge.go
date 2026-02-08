@@ -3,12 +3,15 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-telegram/bot/models"
 
+	"github.com/user/opencode-telegram/internal/health"
+	"github.com/user/opencode-telegram/internal/metrics"
 	"github.com/user/opencode-telegram/internal/opencode"
 	"github.com/user/opencode-telegram/internal/state"
 	"github.com/user/opencode-telegram/internal/telegram"
@@ -16,8 +19,10 @@ import (
 
 type TelegramBot interface {
 	SendMessage(ctx context.Context, text string) (int, error)
+	SendMessagePlain(ctx context.Context, text string) (int, error)
 	SendMessageWithKeyboard(ctx context.Context, text string, keyboard *models.InlineKeyboardMarkup) (int, error)
 	EditMessage(ctx context.Context, messageID int, text string) error
+	EditMessagePlain(ctx context.Context, messageID int, text string) error
 	AnswerCallback(ctx context.Context, callbackID string) error
 	SendTyping(ctx context.Context) error
 }
@@ -27,8 +32,10 @@ type OpenCodeClient interface {
 	ListSessions() ([]opencode.Session, error)
 	SendPrompt(sessionID, text string, agent *string) (*opencode.SendPromptResponse, error)
 	SendPromptWithParts(sessionID string, parts []interface{}, agent *string) (*opencode.SendPromptResponse, error)
+	TriggerPrompt(sessionID, text string, agent *string) error
 	AbortSession(sessionID string) error
 	Health() (map[string]interface{}, error)
+	GetConfig() (map[string]interface{}, error)
 	ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error
 	ReplyQuestion(requestID string, answers []opencode.QuestionAnswer) error
 }
@@ -78,6 +85,8 @@ type Bridge struct {
 	questions     sync.Map
 	lastUpdate    sync.Map
 	updateMu      sync.Mutex
+
+	healthMonitor *health.HealthMonitor
 }
 
 func NewBridge(ocClient OpenCodeClient, tgBot TelegramBot, appState *state.AppState, registry *state.IDRegistry, debounceMs time.Duration) *Bridge {
@@ -104,10 +113,16 @@ func (b *Bridge) getEffectiveAgent() string {
 	return b.state.GetAgentForChat(b.chatID)
 }
 
+func (b *Bridge) SetHealthMonitor(monitor *health.HealthMonitor) {
+	b.healthMonitor = monitor
+}
+
 func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
 	sessionID := b.state.GetCurrentSession()
+	log.Printf("[BRIDGE] HandleUserMessage: currentSession=%q, statePtr=%p", sessionID, b.state)
 
 	if sessionID == "" {
+		log.Printf("[BRIDGE] No session found, creating new one...")
 		title := "Telegram Chat"
 		session, err := b.ocClient.CreateSession(&title, nil)
 		if err != nil {
@@ -115,6 +130,7 @@ func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
 		}
 		sessionID = session.ID
 		b.state.SetCurrentSession(sessionID)
+		log.Printf("[BRIDGE] Created and set session: %s", sessionID)
 	}
 
 	// Check if we have a buffer for this session
@@ -200,46 +216,35 @@ func (b *Bridge) flushDebounceBuffer(sessionID string) {
 func (b *Bridge) sendPromptAsync(ctx context.Context, sessionID, text string, thinkingMsgID int) {
 	agent := b.getEffectiveAgent()
 
-	done := make(chan struct{})
-	defer close(done)
+	go func() {
+		err := b.ocClient.TriggerPrompt(sessionID, text, &agent)
+		if err != nil {
+			errorMsg := fmt.Sprintf("❌ Error: %s", err.Error())
+			if editErr := b.tgBot.EditMessagePlain(context.Background(), thinkingMsgID, errorMsg); editErr != nil {
+				log.Printf("[ERROR] Failed to edit error message: %v", editErr)
+				b.tgBot.SendMessagePlain(context.Background(), errorMsg)
+			}
+			b.state.SetSessionStatus(sessionID, state.SessionError)
+			b.thinkingMsgs.Delete(sessionID)
+		}
+	}()
 
 	go func() {
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ticker.C:
-				_ = b.tgBot.SendTyping(context.Background())
-			case <-done:
+			case <-ctx.Done():
 				return
+			case <-ticker.C:
+				status := b.state.GetSessionStatus(sessionID)
+				if status != state.SessionBusy {
+					return
+				}
+				_ = b.tgBot.SendTyping(context.Background())
 			}
 		}
 	}()
-
-	resp, err := b.ocClient.SendPrompt(sessionID, text, &agent)
-	if err != nil {
-		errorMsg := fmt.Sprintf("❌ Error: %s", err.Error())
-		b.tgBot.EditMessage(ctx, thinkingMsgID, errorMsg)
-		b.state.SetSessionStatus(sessionID, state.SessionError)
-		return
-	}
-
-	responseText := b.extractResponseText(resp)
-
-	chunks := telegram.SplitMessage(responseText, 4096)
-
-	if len(chunks) > 0 {
-		if err := b.tgBot.EditMessage(ctx, thinkingMsgID, chunks[0]); err != nil {
-			b.tgBot.SendMessage(ctx, chunks[0])
-		}
-
-		for i := 1; i < len(chunks); i++ {
-			b.tgBot.SendMessage(ctx, chunks[i])
-		}
-	}
-
-	b.thinkingMsgs.Delete(sessionID)
-	b.state.SetSessionStatus(sessionID, state.SessionIdle)
 }
 
 func min(a, b int) int {
@@ -267,6 +272,15 @@ func (b *Bridge) extractResponseText(resp *opencode.SendPromptResponse) string {
 }
 
 func (b *Bridge) HandleSSEEvent(event opencode.Event) {
+	start := time.Now()
+	defer func() {
+		metrics.ObserveSSEEventProcessing(event.Type, start)
+	}()
+
+	if b.healthMonitor != nil {
+		b.healthMonitor.RecordEvent(event.Type)
+	}
+
 	switch event.Type {
 	case "session.idle":
 		b.handleSessionIdle(event)
@@ -293,43 +307,26 @@ func (b *Bridge) HandleSSEEvent(event opencode.Event) {
 }
 
 func (b *Bridge) handleSessionIdle(event opencode.Event) {
-	props, ok := event.Properties.(*struct {
-		SessionID string `json:"sessionID"`
-	})
+	evtData, ok := event.Properties.(*opencode.EventSessionIdle)
 	if !ok {
 		return
 	}
 
-	b.state.SetSessionStatus(props.SessionID, state.SessionIdle)
+	b.state.SetSessionStatus(evtData.Properties.SessionID, state.SessionIdle)
 }
 
 func (b *Bridge) handleSessionError(event opencode.Event) {
-	props, ok := event.Properties.(*struct {
-		SessionID *string     `json:"sessionID,omitempty"`
-		Error     interface{} `json:"error,omitempty"`
-	})
+	evtData, ok := event.Properties.(*opencode.EventSessionError)
 	if !ok {
 		return
 	}
 
-	errorMsg := "Unknown error"
-	if props.Error != nil {
-		if str, ok := props.Error.(string); ok {
-			errorMsg = str
-		} else {
-			errorMsg = fmt.Sprintf("%v", props.Error)
-		}
+	sessionID := ""
+	if evtData.Properties.SessionID != nil {
+		sessionID = *evtData.Properties.SessionID
 	}
 
-	go func() {
-		ctx := context.Background()
-		msg := fmt.Sprintf("❌ Error: %s", errorMsg)
-		b.tgBot.SendMessage(ctx, msg)
-
-		if props.SessionID != nil {
-			b.state.SetSessionStatus(*props.SessionID, state.SessionError)
-		}
-	}()
+	b.state.SetSessionStatus(sessionID, state.SessionError)
 }
 
 func (b *Bridge) handleMessageUpdated(event opencode.Event) {
@@ -339,117 +336,59 @@ func (b *Bridge) handleMessageUpdated(event opencode.Event) {
 
 	msgEvent, ok := event.Properties.(*opencode.EventMessageUpdated)
 	if !ok {
+		log.Printf("[WARN] handleMessageUpdated: failed to cast event properties")
 		return
 	}
 
-	// Extract message details
-	msgData, ok := msgEvent.Properties.Message.(map[string]interface{})
-	if !ok {
-		return
-	}
+	var sessionID string
+	if msgEvent.Properties.Info != nil {
+		sessionID = msgEvent.Properties.Info.SessionID
 
-	sessionID, ok := msgData["sessionID"].(string)
-	if !ok {
-		return
-	}
-
-	// Extract text from parts
-	parts, ok := msgData["parts"].([]interface{})
-	if !ok {
-		return
-	}
-
-	var textParts []string
-	for _, part := range parts {
-		partMap, ok := part.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Check if this is a text part
-		if partType, ok := partMap["type"].(string); ok && partType == "text" {
-			if text, ok := partMap["text"].(string); ok {
-				textParts = append(textParts, text)
-			}
+		if msgEvent.Properties.Info.Time.Completed != nil {
+			b.state.SetSessionStatus(sessionID, state.SessionIdle)
+			log.Printf("[INFO] handleMessageUpdated: message complete for session %s", sessionID)
 		}
 	}
-
-	if len(textParts) == 0 {
-		return
-	}
-
-	responseText := strings.Join(textParts, "\n")
-
-	// Find the thinking message for this session
-	thinkingMsgIDInterface, ok := b.thinkingMsgs.Load(sessionID)
-	if !ok {
-		return
-	}
-
-	thinkingMsgID, ok := thinkingMsgIDInterface.(int)
-	if !ok {
-		return
-	}
-
-	// Format and send the response
-	go func() {
-		ctx := context.Background()
-		formattedText := telegram.FormatHTML(responseText)
-		chunks := telegram.SplitMessage(formattedText, 4096)
-
-		if len(chunks) > 0 {
-			// Edit the thinking message with the first chunk
-			if err := b.tgBot.EditMessage(ctx, thinkingMsgID, chunks[0]); err != nil {
-				// Fallback: send as new message
-				b.tgBot.SendMessage(ctx, chunks[0])
-			}
-
-			// Send remaining chunks as new messages
-			for i := 1; i < len(chunks); i++ {
-				b.tgBot.SendMessage(ctx, chunks[i])
-			}
-		}
-
-		// Clean up
-		b.thinkingMsgs.Delete(sessionID)
-		b.streamBuffers.Delete(sessionID)
-		b.state.SetSessionStatus(sessionID, state.SessionIdle)
-	}()
 }
 
 func (b *Bridge) handleMessagePartUpdated(event opencode.Event) {
 	partEvent, ok := event.Properties.(*opencode.EventMessagePartUpdated)
 	if !ok {
+		log.Printf("[WARN] handleMessagePartUpdated: failed to cast event properties")
 		return
 	}
 
-	// Extract delta text
 	if partEvent.Properties.Delta == nil {
+		log.Printf("[DEBUG] handleMessagePartUpdated: delta is nil")
 		return
 	}
 	delta := *partEvent.Properties.Delta
 
-	// Extract sessionID from part
 	partData, ok := partEvent.Properties.Part.(map[string]interface{})
 	if !ok {
+		log.Printf("[WARN] handleMessagePartUpdated: part is not a map")
 		return
 	}
 
 	sessionID, ok := partData["sessionID"].(string)
 	if !ok {
+		log.Printf("[WARN] handleMessagePartUpdated: sessionID not found in part")
 		return
 	}
 
-	// Get thinking message ID
 	thinkingMsgIDInterface, ok := b.thinkingMsgs.Load(sessionID)
 	if !ok {
+		log.Printf("[WARN] handleMessagePartUpdated: no thinking message for session %s", sessionID)
 		return
 	}
 
 	thinkingMsgID, ok := thinkingMsgIDInterface.(int)
 	if !ok {
+		log.Printf("[WARN] handleMessagePartUpdated: thinking message ID is not int")
 		return
 	}
+
+	log.Printf("[DEBUG] handleMessagePartUpdated: session=%s, delta_len=%d, thinkingMsgID=%d", sessionID, len(delta), thinkingMsgID)
 
 	// Get or create stream buffer
 	bufInterface, _ := b.streamBuffers.LoadOrStore(sessionID, &StreamBuffer{
@@ -633,46 +572,32 @@ func (b *Bridge) HandlePhotoMessage(ctx context.Context, photos []models.PhotoSi
 func (b *Bridge) sendPhotoPromptAsync(ctx context.Context, sessionID string, photos []models.PhotoSize, caption string, botToken string, thinkingMsgID int) {
 	agent := b.state.GetCurrentAgent()
 
-	// Create done channel to signal typing goroutine to stop
-	done := make(chan struct{})
-	defer close(done)
-
-	// Launch typing indicator goroutine
-	go func() {
-		ticker := time.NewTicker(4 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				_ = b.tgBot.SendTyping(context.Background())
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	// Get largest photo
 	largestPhoto := telegram.GetLargestPhoto(photos)
 	if largestPhoto == nil {
 		errorMsg := "❌ Error: No valid photo found"
-		b.tgBot.EditMessage(ctx, thinkingMsgID, errorMsg)
+		if editErr := b.tgBot.EditMessagePlain(context.Background(), thinkingMsgID, errorMsg); editErr != nil {
+			log.Printf("[ERROR] Failed to edit error message: %v", editErr)
+			b.tgBot.SendMessagePlain(context.Background(), errorMsg)
+		}
 		b.state.SetSessionStatus(sessionID, state.SessionError)
+		b.thinkingMsgs.Delete(sessionID)
 		return
 	}
 
-	// Download photo
 	photoData, err := telegram.DownloadPhoto(ctx, botToken, largestPhoto.FileID)
 	if err != nil {
 		errorMsg := fmt.Sprintf("❌ Error downloading image: %s", err.Error())
-		b.tgBot.EditMessage(ctx, thinkingMsgID, errorMsg)
+		if editErr := b.tgBot.EditMessagePlain(context.Background(), thinkingMsgID, errorMsg); editErr != nil {
+			log.Printf("[ERROR] Failed to edit error message: %v", editErr)
+			b.tgBot.SendMessagePlain(context.Background(), errorMsg)
+		}
 		b.state.SetSessionStatus(sessionID, state.SessionError)
+		b.thinkingMsgs.Delete(sessionID)
 		return
 	}
 
-	// Encode to base64
 	base64Image := telegram.EncodeBase64(photoData)
 
-	// Build parts array
 	parts := []interface{}{
 		opencode.ImagePartInput{
 			Type:     "image",
@@ -681,7 +606,6 @@ func (b *Bridge) sendPhotoPromptAsync(ctx context.Context, sessionID string, pho
 		},
 	}
 
-	// Add caption as text part if present
 	if caption != "" {
 		parts = append(parts, opencode.TextPartInput{
 			Type: "text",
@@ -689,30 +613,35 @@ func (b *Bridge) sendPhotoPromptAsync(ctx context.Context, sessionID string, pho
 		})
 	}
 
-	// Send prompt with parts
-	resp, err := b.ocClient.SendPromptWithParts(sessionID, parts, &agent)
-	if err != nil {
-		errorMsg := fmt.Sprintf("❌ Error: %s", err.Error())
-		b.tgBot.EditMessage(ctx, thinkingMsgID, errorMsg)
-		b.state.SetSessionStatus(sessionID, state.SessionError)
-		return
-	}
-
-	responseText := b.extractResponseText(resp)
-	chunks := telegram.SplitMessage(responseText, 4096)
-
-	if len(chunks) > 0 {
-		if err := b.tgBot.EditMessage(ctx, thinkingMsgID, chunks[0]); err != nil {
-			b.tgBot.SendMessage(ctx, chunks[0])
+	go func() {
+		_, err := b.ocClient.SendPromptWithParts(sessionID, parts, &agent)
+		if err != nil {
+			errorMsg := fmt.Sprintf("❌ Error: %s", err.Error())
+			if editErr := b.tgBot.EditMessagePlain(context.Background(), thinkingMsgID, errorMsg); editErr != nil {
+				log.Printf("[ERROR] Failed to edit error message: %v", editErr)
+				b.tgBot.SendMessagePlain(context.Background(), errorMsg)
+			}
+			b.state.SetSessionStatus(sessionID, state.SessionError)
+			b.thinkingMsgs.Delete(sessionID)
 		}
+	}()
 
-		for i := 1; i < len(chunks); i++ {
-			b.tgBot.SendMessage(ctx, chunks[i])
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				status := b.state.GetSessionStatus(sessionID)
+				if status != state.SessionBusy {
+					return
+				}
+				_ = b.tgBot.SendTyping(context.Background())
+			}
 		}
-	}
-
-	b.thinkingMsgs.Delete(sessionID)
-	b.state.SetSessionStatus(sessionID, state.SessionIdle)
+	}()
 }
 
 // HandleUnsupportedMedia handles unsupported media types
@@ -780,6 +709,12 @@ func (b *Bridge) RegisterHandlers() {
 			return
 		}
 		if err := cmdHandler.HandleSwitchSession(ctx, sessionID); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCommandHandler("selectsession", func(ctx context.Context, args string) {
+		if err := cmdHandler.HandleSelectSession(ctx); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
 		}
 	})
@@ -853,6 +788,24 @@ func (b *Bridge) RegisterHandlers() {
 
 	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("mdl:", func(ctx context.Context, callbackID string, data string) {
 		if err := modelHandler.HandleModelCallback(ctx, 0, data); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("sess:", func(ctx context.Context, callbackID string, data string) {
+		sessionID := strings.TrimPrefix(data, "sess:")
+		if err := cmdHandler.HandleSwitchSession(ctx, sessionID); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("sesspage:", func(ctx context.Context, callbackID string, data string) {
+		pageStr := strings.TrimPrefix(data, "sesspage:")
+		page := 0
+		fmt.Sscanf(pageStr, "%d", &page)
+		if err := cmdHandler.HandleSessionPageCallback(ctx, page); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
 		}
 		b.tgBot.AnswerCallback(ctx, callbackID)
