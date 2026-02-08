@@ -796,7 +796,7 @@ Wave 6 (Final):
 
 ---
 
-- [ ] 8. Complete Question Handler with Inline Keyboards
+- [x] 8. Complete Question Handler with Inline Keyboards
 
   **What to do**:
   - In `internal/bridge/question.go`:
@@ -880,7 +880,7 @@ Wave 6 (Final):
 
 ---
 
-- [ ] 9. Message Fragment Reassembly
+- [x] 9. Message Fragment Reassembly
 
   **What to do**:
   - In `internal/bridge/bridge.go`:
@@ -932,7 +932,7 @@ Wave 6 (Final):
 
 ---
 
-- [ ] 10. Inbound Debounce
+- [x] 10. Inbound Debounce
 
   **What to do**:
   - In `internal/bridge/bridge.go`:
@@ -984,7 +984,7 @@ Wave 6 (Final):
 
 ---
 
-- [ ] 11. IDRegistry Cleanup Goroutine
+- [x] 11. IDRegistry Cleanup Goroutine
 
   **What to do**:
   - In `internal/state/registry.go`:
