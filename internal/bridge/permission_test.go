@@ -15,7 +15,7 @@ import (
 func TestHandlePermissionAskedSSE(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -50,7 +50,7 @@ func TestHandlePermissionAskedSSE(t *testing.T) {
 func TestHandlePermissionCallback(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -77,7 +77,7 @@ func TestHandlePermissionCallback(t *testing.T) {
 func TestPermissionMessageContainsPermissionType(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -114,7 +114,7 @@ func TestPermissionMessageContainsPermissionType(t *testing.T) {
 func TestPermissionAllowOnceResponse(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -141,7 +141,7 @@ func TestPermissionAllowOnceResponse(t *testing.T) {
 func TestPermissionAlwaysAllowResponse(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -168,7 +168,7 @@ func TestPermissionAlwaysAllowResponse(t *testing.T) {
 func TestPermissionRejectResponse(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -195,7 +195,7 @@ func TestPermissionRejectResponse(t *testing.T) {
 func TestPermissionKeyboardRemovedAfterResponse(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)

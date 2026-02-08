@@ -22,6 +22,7 @@ import (
 	"github.com/user/opencode-telegram/internal/opencode"
 	"github.com/user/opencode-telegram/internal/state"
 	"github.com/user/opencode-telegram/internal/telegram"
+	"github.com/user/opencode-telegram/internal/webhook"
 )
 
 func main() {
@@ -30,12 +31,17 @@ func main() {
 	ocDirectory := getenv("OPENCODE_DIRECTORY", ".")
 	debounceStr := getenv("TELEGRAM_DEBOUNCE_MS", "1000")
 	offsetFile := getenv("TELEGRAM_OFFSET_FILE", "~/.opencode-telegram-offset")
+	stateFile := getenv("TELEGRAM_STATE_FILE", "~/.opencode-telegram-state")
 	proxyURL := os.Getenv("TELEGRAM_PROXY")
 
 	// Webhook mode variables
 	webhookURL := os.Getenv("TELEGRAM_WEBHOOK_URL")
 	webhookPort := getenv("TELEGRAM_WEBHOOK_PORT", "8443")
 	webhookSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
+
+	// OpenCode plugin webhook variables
+	pluginWebhookPort := getenv("PLUGIN_WEBHOOK_PORT", "8888")
+	usePlugin := getenv("USE_PLUGIN_MODE", "true") == "true"
 
 	// Parse bot accounts
 	accounts, err := config.ParseAccountConfigs()
@@ -59,6 +65,7 @@ func main() {
 	log.Printf("OpenCode Directory: %s", ocDirectory)
 	log.Printf("Debounce Duration: %dms", debounceMs)
 	log.Printf("Active Accounts: %d", len(accounts))
+	log.Printf("Plugin Mode: %v (webhook port: %s)", usePlugin, pluginWebhookPort)
 	if proxyURL != "" {
 		log.Printf("Proxy URL: %s", proxyURL)
 	}
@@ -92,12 +99,14 @@ func main() {
 		ocClient = opencode.NewClient(ocConfig)
 	}
 
-	// Create shared SSE consumer (one for all accounts)
+	// Create shared SSE consumer (only if not using plugin mode)
 	var sseConsumer *opencode.SSEConsumer
-	if transport != nil {
-		sseConsumer = opencode.NewSSEConsumerWithTransport(ocConfig, transport)
-	} else {
-		sseConsumer = opencode.NewSSEConsumer(ocConfig)
+	if !usePlugin {
+		if transport != nil {
+			sseConsumer = opencode.NewSSEConsumerWithTransport(ocConfig, transport)
+		} else {
+			sseConsumer = opencode.NewSSEConsumer(ocConfig)
+		}
 	}
 
 	// Create shared HTTP client for media downloads
@@ -152,21 +161,47 @@ func main() {
 	_ = metrics.ActiveSSEConnections
 	_ = metrics.SSEConnectionErrors
 
-	// Connect SSE consumer (shared)
-	if err := sseConsumer.Connect(ctx); err != nil {
-		log.Fatalf("Failed to connect SSE consumer: %v", err)
+	// Start plugin webhook server if enabled
+	var pluginWebhook *webhook.Server
+	var firstBridge *bridge.Bridge
+	if usePlugin {
+		log.Printf("Plugin mode enabled, will start webhook server after bridge initialization")
+	} else {
+		// Connect SSE consumer (shared) if not using plugin
+		if err := sseConsumer.Connect(ctx); err != nil {
+			log.Fatalf("Failed to connect SSE consumer: %v", err)
+		}
+		defer sseConsumer.Close()
+		healthMonitor.SetSSEConnected(true)
 	}
-	defer sseConsumer.Close()
-	healthMonitor.SetSSEConnected(true)
 
 	// Create and start bot instances (one per account)
 	var wg sync.WaitGroup
+	bridgeChan := make(chan *bridge.Bridge, 1)
+
 	for i, account := range accounts {
 		wg.Add(1)
 		go func(idx int, acc config.AccountConfig) {
 			defer wg.Done()
-			runBotInstance(ctx, idx, acc, ocClient, sseConsumer, healthMonitor, debounceDuration, offsetFile, webhookURL, webhookPort, webhookSecret)
+			bridgeInst := runBotInstance(ctx, idx, acc, ocClient, sseConsumer, healthMonitor, debounceDuration, offsetFile, stateFile, webhookURL, webhookPort, webhookSecret)
+			if idx == 0 && usePlugin {
+				bridgeChan <- bridgeInst
+			}
 		}(i, account)
+	}
+
+	if usePlugin {
+		select {
+		case firstBridge = <-bridgeChan:
+			pluginWebhook = webhook.NewServer(":"+pluginWebhookPort, firstBridge)
+			go func() {
+				if err := pluginWebhook.Start(ctx); err != nil {
+					log.Printf("Plugin webhook server error: %v", err)
+				}
+			}()
+		case <-time.After(5 * time.Second):
+			log.Printf("Warning: Timeout waiting for first bridge instance")
+		}
 	}
 
 	// Wait for shutdown signal or reload
@@ -218,8 +253,9 @@ func runBotInstance(
 	healthMonitor *health.HealthMonitor,
 	debounceDuration time.Duration,
 	offsetFile string,
+	stateFile string,
 	webhookURL, webhookPort, webhookSecret string,
-) {
+) *bridge.Bridge {
 	// Load offset for this account
 	currentOffset, err := state.LoadOffset(offsetFile)
 	if err != nil {
@@ -243,35 +279,36 @@ func runBotInstance(
 		log.Printf("[%s] Warning: failed to set commands: %v", accountName, err)
 	}
 
-	// Create state instance (one per account)
-	appState := state.NewAppState()
+	appState := state.NewAppState(stateFile)
 	registry := state.NewIDRegistry()
 
 	// Create bridge instance (one per account)
 	bridgeInstance := bridge.NewBridge(ocClient, tgBot, appState, registry, debounceDuration)
 	bridgeInstance.SetHealthMonitor(healthMonitor)
 
-	// Start bridge
-	bridgeInstance.Start(ctx, sseConsumer)
+	// Start bridge (only if SSE consumer exists)
+	if sseConsumer != nil {
+		bridgeInstance.Start(ctx, sseConsumer)
+	}
 	bridgeInstance.RegisterHandlers()
 
 	// Start registry cleanup
 	registry.StartCleanup(ctx)
 
-	// Start bot in appropriate mode
-	if webhookURL != "" {
-		// Webhook mode
-		log.Printf("[%s] Starting in webhook mode on port %s", accountName, webhookPort)
-		if err := tgBot.StartWebhook(ctx, webhookURL, webhookPort, webhookSecret); err != nil {
-			log.Printf("[%s] Webhook error: %v", accountName, err)
+	go func() {
+		if webhookURL != "" {
+			log.Printf("[%s] Starting in webhook mode on port %s", accountName, webhookPort)
+			if err := tgBot.StartWebhook(ctx, webhookURL, webhookPort, webhookSecret); err != nil {
+				log.Printf("[%s] Webhook error: %v", accountName, err)
+			}
+		} else {
+			log.Printf("[%s] Starting in polling mode", accountName)
+			tgBot.Start(ctx)
 		}
-	} else {
-		// Polling mode (default)
-		log.Printf("[%s] Starting in polling mode", accountName)
-		tgBot.Start(ctx)
-	}
+		log.Printf("[%s] Bot instance shut down", accountName)
+	}()
 
-	log.Printf("[%s] Bot instance shut down", accountName)
+	return bridgeInstance
 }
 
 func getenv(key, defaultValue string) string {

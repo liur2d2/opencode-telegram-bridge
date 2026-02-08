@@ -35,6 +35,11 @@ Thumbs.db
 
 # Built binary
 opencode-telegram
+opencode-telegram-bot
+opencode-telegram-new
 
 # Debug backup files
 *.debug-backup
+
+# Shell scripts (may contain sensitive paths)
+*.sh

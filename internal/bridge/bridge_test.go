@@ -174,7 +174,7 @@ func (m *MockTelegramBot) GetEditedMessages(messageID int) []string {
 func TestBridgeHandleUserMessage_CreatesSessionIfNotExists(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -200,7 +200,7 @@ func TestBridgeHandleUserMessage_CreatesSessionIfNotExists(t *testing.T) {
 func TestBridgeHandleUserMessage_BusySession(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	appState.SetCurrentSession("ses_123")
@@ -222,7 +222,7 @@ func TestBridgeHandleUserMessage_BusySession(t *testing.T) {
 func TestBridgeHandleUserMessage_LongResponse(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -254,7 +254,7 @@ func TestBridgeHandleUserMessage_LongResponse(t *testing.T) {
 func TestBridgeHandleUserMessage_NoSession(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -282,7 +282,7 @@ func TestBridgeHandleUserMessage_NoSession(t *testing.T) {
 func TestBridgeHandleUserMessage_SessionError(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	appState.SetCurrentSession("ses_123")
@@ -306,7 +306,7 @@ func TestBridgeHandleUserMessage_SessionError(t *testing.T) {
 func TestBridgeHandleSSEEvent_SessionIdle(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	appState.SetCurrentSession("ses_123")
@@ -331,7 +331,7 @@ func TestBridgeHandleSSEEvent_SessionIdle(t *testing.T) {
 func TestBridgeHandleSSEEvent_SessionError(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)
@@ -361,7 +361,7 @@ func TestBridgeHandleSSEEvent_SessionError(t *testing.T) {
 func TestBridgeThinkingIndicator(t *testing.T) {
 	mockOC := new(MockOpenCodeClient)
 	mockTG := NewMockTelegramBot()
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 	registry := state.NewIDRegistry()
 
 	bridge := NewBridge(mockOC, mockTG, appState, registry, 100*time.Millisecond)

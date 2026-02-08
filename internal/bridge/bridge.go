@@ -30,12 +30,14 @@ type TelegramBot interface {
 type OpenCodeClient interface {
 	CreateSession(title *string, parentID *string) (*opencode.Session, error)
 	ListSessions() ([]opencode.Session, error)
+	DeleteSession(sessionID string) error
 	SendPrompt(sessionID, text string, agent *string) (*opencode.SendPromptResponse, error)
 	SendPromptWithParts(sessionID string, parts []interface{}, agent *string) (*opencode.SendPromptResponse, error)
 	TriggerPrompt(sessionID, text string, agent *string) error
 	AbortSession(sessionID string) error
 	Health() (map[string]interface{}, error)
 	GetConfig() (map[string]interface{}, error)
+	GetMessages(sessionID string, limit int) ([]opencode.Message, error)
 	ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error
 	ReplyQuestion(requestID string, answers []opencode.QuestionAnswer) error
 }
@@ -70,6 +72,12 @@ type StreamBuffer struct {
 	mu            sync.Mutex
 }
 
+type MessageBuffer struct {
+	text     string
+	lastEdit time.Time
+	mu       sync.Mutex
+}
+
 type Bridge struct {
 	ocClient        OpenCodeClient
 	tgBot           TelegramBot
@@ -81,10 +89,12 @@ type Bridge struct {
 
 	thinkingMsgs  sync.Map
 	streamBuffers sync.Map
+	msgBuffers    sync.Map
 	permissions   sync.Map
 	questions     sync.Map
 	lastUpdate    sync.Map
 	updateMu      sync.Mutex
+	idleProcessed sync.Map
 
 	healthMonitor *health.HealthMonitor
 }
@@ -312,7 +322,27 @@ func (b *Bridge) handleSessionIdle(event opencode.Event) {
 		return
 	}
 
-	b.state.SetSessionStatus(evtData.Properties.SessionID, state.SessionIdle)
+	sessionID := evtData.Properties.SessionID
+	b.state.SetSessionStatus(sessionID, state.SessionIdle)
+
+	if evtData.Properties.Content != nil && *evtData.Properties.Content != "" {
+		content := *evtData.Properties.Content
+
+		// Deduplication: check if we already processed this session recently
+		cacheKey := fmt.Sprintf("idle:%s", sessionID)
+		if _, exists := b.idleProcessed.LoadOrStore(cacheKey, time.Now()); exists {
+			log.Printf("[INFO] handleSessionIdle: skipping duplicate idle event for session %s", sessionID)
+			return
+		}
+
+		// Clear cache after 5 seconds
+		time.AfterFunc(5*time.Second, func() {
+			b.idleProcessed.Delete(cacheKey)
+		})
+
+		log.Printf("[INFO] handleSessionIdle: sending response for session %s, content length=%d", sessionID, len(content))
+		go b.sendCompletedMessageFromWebhook(sessionID, content)
+	}
 }
 
 func (b *Bridge) handleSessionError(event opencode.Event) {
@@ -347,8 +377,133 @@ func (b *Bridge) handleMessageUpdated(event opencode.Event) {
 		if msgEvent.Properties.Info.Time.Completed != nil {
 			b.state.SetSessionStatus(sessionID, state.SessionIdle)
 			log.Printf("[INFO] handleMessageUpdated: message complete for session %s", sessionID)
+
+			cacheKey := fmt.Sprintf("msg:%s:%s", sessionID, msgEvent.Properties.Info.ID)
+			if _, exists := b.idleProcessed.LoadOrStore(cacheKey, time.Now()); exists {
+				log.Printf("[INFO] handleMessageUpdated: skipping duplicate message for session %s", sessionID)
+				return
+			}
+
+			time.AfterFunc(5*time.Second, func() {
+				b.idleProcessed.Delete(cacheKey)
+			})
+
+			go b.fetchAndSendCompletedMessage(sessionID)
 		}
 	}
+}
+
+func (b *Bridge) fetchAndSendCompletedMessage(sessionID string) {
+	messages, err := b.ocClient.GetMessages(sessionID, 10)
+	if err != nil {
+		log.Printf("[ERROR] fetchAndSendCompletedMessage: failed to get messages for session %s: %v", sessionID, err)
+		return
+	}
+
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Info.Role == "assistant" {
+			var textParts []string
+			for _, part := range msg.Parts {
+				if part.Type == "text" && part.Text != "" {
+					textParts = append(textParts, part.Text)
+				}
+			}
+
+			if len(textParts) > 0 {
+				content := strings.Join(textParts, "\n")
+				log.Printf("[INFO] fetchAndSendCompletedMessage: sending response for session %s, content length=%d", sessionID, len(content))
+				b.sendCompletedMessageFromWebhook(sessionID, content)
+				return
+			}
+		}
+	}
+
+	log.Printf("[WARN] fetchAndSendCompletedMessage: no assistant message found for session %s", sessionID)
+}
+
+func (b *Bridge) sendCompletedMessageFromWebhook(sessionID string, content string) {
+	ctx := context.Background()
+
+	thinkingMsgIDInterface, ok := b.thinkingMsgs.Load(sessionID)
+	if !ok {
+		log.Printf("[INFO] sendCompletedMessageFromWebhook: creating new message for session %s", sessionID)
+		formattedText := telegram.FormatHTML(content)
+		chunks := telegram.SplitMessage(formattedText, 4096)
+
+		for _, chunk := range chunks {
+			if _, err := b.tgBot.SendMessage(ctx, chunk); err != nil {
+				log.Printf("[ERROR] sendCompletedMessageFromWebhook: send failed: %v", err)
+			}
+		}
+		return
+	}
+
+	thinkingMsgID := thinkingMsgIDInterface.(int)
+
+	formattedText := telegram.FormatHTML(content)
+	chunks := telegram.SplitMessage(formattedText, 4096)
+
+	if len(chunks) > 0 {
+		if err := b.tgBot.EditMessage(ctx, thinkingMsgID, chunks[0]); err != nil {
+			log.Printf("[ERROR] sendCompletedMessageFromWebhook: edit failed: %v", err)
+		}
+
+		for i := 1; i < len(chunks); i++ {
+			if _, err := b.tgBot.SendMessage(ctx, chunks[i]); err != nil {
+				log.Printf("[ERROR] sendCompletedMessageFromWebhook: send chunk %d failed: %v", i, err)
+			}
+		}
+	}
+
+	b.thinkingMsgs.Delete(sessionID)
+	log.Printf("[INFO] sendCompletedMessageFromWebhook: sent final message for session %s, content length=%d", sessionID, len(content))
+}
+
+func (b *Bridge) sendCompletedMessage(sessionID string) {
+	ctx := context.Background()
+
+	thinkingMsgIDInterface, ok := b.thinkingMsgs.Load(sessionID)
+	if !ok {
+		log.Printf("[INFO] sendCompletedMessage: no thinking message for session %s", sessionID)
+		return
+	}
+	thinkingMsgID := thinkingMsgIDInterface.(int)
+
+	bufInterface, ok := b.msgBuffers.Load(sessionID)
+	if !ok {
+		log.Printf("[WARN] sendCompletedMessage: no buffer for session %s", sessionID)
+		b.tgBot.EditMessage(ctx, thinkingMsgID, "✅ Response completed (no content)")
+		return
+	}
+
+	buf := bufInterface.(*MessageBuffer)
+	buf.mu.Lock()
+	finalText := buf.text
+	buf.mu.Unlock()
+
+	if finalText == "" {
+		finalText = "✅ Response completed"
+	}
+
+	formattedText := telegram.FormatHTML(finalText)
+	chunks := telegram.SplitMessage(formattedText, 4096)
+
+	if len(chunks) > 0 {
+		if err := b.tgBot.EditMessage(ctx, thinkingMsgID, chunks[0]); err != nil {
+			log.Printf("[ERROR] sendCompletedMessage: edit failed: %v", err)
+		}
+
+		for i := 1; i < len(chunks); i++ {
+			if _, err := b.tgBot.SendMessage(ctx, chunks[i]); err != nil {
+				log.Printf("[ERROR] sendCompletedMessage: send chunk %d failed: %v", i, err)
+			}
+		}
+	}
+
+	b.msgBuffers.Delete(sessionID)
+	b.thinkingMsgs.Delete(sessionID)
+	log.Printf("[INFO] sendCompletedMessage: sent final message for session %s", sessionID)
 }
 
 func (b *Bridge) handleMessagePartUpdated(event opencode.Event) {
@@ -725,6 +880,25 @@ func (b *Bridge) RegisterHandlers() {
 		}
 	})
 
+	b.tgBot.(*telegram.Bot).RegisterCommandHandler("deletesession", func(ctx context.Context, args string) {
+		sessionID := strings.TrimSpace(args)
+		if sessionID == "" {
+			if err := cmdHandler.HandleDeleteSessionMenu(ctx); err != nil {
+				b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+			}
+			return
+		}
+		if err := cmdHandler.HandleDeleteSession(ctx, sessionID); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCommandHandler("deletesessions", func(ctx context.Context, args string) {
+		if err := cmdHandler.HandleDeleteSessionMenu(ctx); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+	})
+
 	b.tgBot.(*telegram.Bot).RegisterCommandHandler("status", func(ctx context.Context, args string) {
 		if err := cmdHandler.HandleStatus(ctx); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
@@ -808,6 +982,37 @@ func (b *Bridge) RegisterHandlers() {
 		if err := cmdHandler.HandleSessionPageCallback(ctx, page); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
 		}
+		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("del:", func(ctx context.Context, callbackID string, data string) {
+		sessionID := strings.TrimPrefix(data, "del:")
+		if err := cmdHandler.HandleDeleteConfirmCallback(ctx, sessionID); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delpage:", func(ctx context.Context, callbackID string, data string) {
+		pageStr := strings.TrimPrefix(data, "delpage:")
+		page := 0
+		fmt.Sscanf(pageStr, "%d", &page)
+		if err := cmdHandler.HandleDeleteSessionPageCallback(ctx, page); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delconfirm:", func(ctx context.Context, callbackID string, data string) {
+		sessionID := strings.TrimPrefix(data, "delconfirm:")
+		if err := cmdHandler.HandleDeleteExecuteCallback(ctx, sessionID); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delcancel", func(ctx context.Context, callbackID string, data string) {
+		b.tgBot.SendMessage(ctx, "❌ Deletion cancelled")
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 

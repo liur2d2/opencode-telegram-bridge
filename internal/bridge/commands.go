@@ -133,6 +133,228 @@ func (h *CommandHandler) HandleAbortSession(ctx context.Context) error {
 	return err
 }
 
+func (h *CommandHandler) HandleDeleteSession(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		_, err := h.tgBot.SendMessage(ctx, "❌ Please provide session ID: /deletesession &lt;id&gt;")
+		return err
+	}
+
+	sessions, err := h.ocClient.ListSessions()
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+
+	var targetSession *opencode.Session
+	for i := range sessions {
+		if sessions[i].ID == sessionID {
+			targetSession = &sessions[i]
+			break
+		}
+	}
+
+	if targetSession == nil {
+		_, err := h.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Session %s not found", sessionID))
+		return err
+	}
+
+	if err := h.ocClient.DeleteSession(sessionID); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+
+	currentID := h.appState.GetCurrentSession()
+	if currentID == sessionID {
+		h.appState.SetCurrentSession("")
+	}
+
+	msg := fmt.Sprintf("🗑️ Deleted session: %s\n📝 Title: %s", sessionID, targetSession.Title)
+	_, err = h.tgBot.SendMessage(ctx, msg)
+	return err
+}
+
+func (h *CommandHandler) HandleDeleteSessionMenu(ctx context.Context) error {
+	sessions, err := h.ocClient.ListSessions()
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+
+	primarySessions := []opencode.Session{}
+	for _, sess := range sessions {
+		if sess.ParentID == nil {
+			primarySessions = append(primarySessions, sess)
+		}
+	}
+
+	if len(primarySessions) == 0 {
+		_, err := h.tgBot.SendMessage(ctx, "No sessions found.")
+		return err
+	}
+
+	h.sessionCache = primarySessions
+	h.sessionCacheKey = fmt.Sprintf("delcache_%d", time.Now().Unix())
+
+	currentID := h.appState.GetCurrentSession()
+
+	const sessionsPerPage = 8
+	totalPages := (len(primarySessions) + sessionsPerPage - 1) / sessionsPerPage
+
+	return h.showDeleteSessionPage(ctx, primarySessions, currentID, 0, totalPages)
+}
+
+func (h *CommandHandler) HandleDeleteSessionPageCallback(ctx context.Context, page int) error {
+	if h.sessionCache == nil || len(h.sessionCache) == 0 {
+		_, err := h.tgBot.SendMessage(ctx, "❌ Session list expired. Please use /deletesessions again.")
+		return err
+	}
+
+	currentID := h.appState.GetCurrentSession()
+	const sessionsPerPage = 8
+	totalPages := (len(h.sessionCache) + sessionsPerPage - 1) / sessionsPerPage
+
+	return h.showDeleteSessionPage(ctx, h.sessionCache, currentID, page, totalPages)
+}
+
+func (h *CommandHandler) showDeleteSessionPage(ctx context.Context, sessions []opencode.Session, currentID string, page, totalPages int) error {
+	const sessionsPerPage = 8
+	start := page * sessionsPerPage
+	end := start + sessionsPerPage
+	if end > len(sessions) {
+		end = len(sessions)
+	}
+
+	pageSessions := sessions[start:end]
+	keyboard := h.buildDeleteKeyboard(pageSessions, currentID, page, totalPages)
+
+	text := fmt.Sprintf("🗑️ Select session to delete (Page %d/%d):", page+1, totalPages)
+	_, err := h.tgBot.SendMessageWithKeyboard(ctx, text, keyboard)
+	return err
+}
+
+func (h *CommandHandler) buildDeleteKeyboard(sessions []opencode.Session, currentID string, page, totalPages int) *models.InlineKeyboardMarkup {
+	var rows [][]models.InlineKeyboardButton
+
+	for _, sess := range sessions {
+		label := sess.Title
+		if label == "" {
+			label = sess.Slug
+		}
+
+		dir := h.shortenDirectory(sess.Directory)
+		label = fmt.Sprintf("%s [%s]", label, dir)
+
+		if sess.ID == currentID {
+			label = "✅ " + label
+		}
+
+		maxLen := 50
+		if len(label) > maxLen {
+			label = label[:maxLen-3] + "..."
+		}
+
+		button := models.InlineKeyboardButton{
+			Text:         label,
+			CallbackData: fmt.Sprintf("del:%s", sess.ID),
+		}
+		rows = append(rows, []models.InlineKeyboardButton{button})
+	}
+
+	var navRow []models.InlineKeyboardButton
+	if page > 0 {
+		navRow = append(navRow, models.InlineKeyboardButton{
+			Text:         "⬅️ Previous",
+			CallbackData: fmt.Sprintf("delpage:%d", page-1),
+		})
+	}
+	if page < totalPages-1 {
+		navRow = append(navRow, models.InlineKeyboardButton{
+			Text:         "Next ➡️",
+			CallbackData: fmt.Sprintf("delpage:%d", page+1),
+		})
+	}
+	if len(navRow) > 0 {
+		rows = append(rows, navRow)
+	}
+
+	cancelRow := []models.InlineKeyboardButton{
+		{
+			Text:         "❌ Cancel",
+			CallbackData: "delcancel",
+		},
+	}
+	rows = append(rows, cancelRow)
+
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: rows,
+	}
+}
+
+func (h *CommandHandler) HandleDeleteConfirmCallback(ctx context.Context, sessionID string) error {
+	sessions, err := h.ocClient.ListSessions()
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+
+	var targetSession *opencode.Session
+	for i := range sessions {
+		if sessions[i].ID == sessionID {
+			targetSession = &sessions[i]
+			break
+		}
+	}
+
+	if targetSession == nil {
+		_, err := h.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Session %s not found", sessionID))
+		return err
+	}
+
+	confirmText := fmt.Sprintf("⚠️ Confirm deletion?\n\n📝 Title: %s\n🆔 ID: %s\n📂 Directory: %s",
+		targetSession.Title, sessionID, targetSession.Directory)
+
+	keyboard := &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: "✅ Yes, delete", CallbackData: fmt.Sprintf("delconfirm:%s", sessionID)},
+				{Text: "❌ Cancel", CallbackData: "delcancel"},
+			},
+		},
+	}
+
+	_, err = h.tgBot.SendMessageWithKeyboard(ctx, confirmText, keyboard)
+	return err
+}
+
+func (h *CommandHandler) HandleDeleteExecuteCallback(ctx context.Context, sessionID string) error {
+	sessions, err := h.ocClient.ListSessions()
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+
+	var targetSession *opencode.Session
+	for i := range sessions {
+		if sessions[i].ID == sessionID {
+			targetSession = &sessions[i]
+			break
+		}
+	}
+
+	if targetSession == nil {
+		_, err := h.tgBot.SendMessage(ctx, "❌ Session not found or already deleted")
+		return err
+	}
+
+	if err := h.ocClient.DeleteSession(sessionID); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+
+	currentID := h.appState.GetCurrentSession()
+	if currentID == sessionID {
+		h.appState.SetCurrentSession("")
+	}
+
+	msg := fmt.Sprintf("✅ Deleted successfully!\n\n📝 Title: %s\n🆔 ID: %s", targetSession.Title, sessionID)
+	_, err = h.tgBot.SendMessage(ctx, msg)
+	return err
+}
+
 func (h *CommandHandler) HandleSwitchSession(ctx context.Context, sessionID string) error {
 	log.Printf("[CMD] HandleSwitchSession: switching to %s, statePtr=%p", sessionID, h.appState)
 	sessions, err := h.ocClient.ListSessions()
@@ -163,10 +385,13 @@ func (h *CommandHandler) HandleSwitchSession(ctx context.Context, sessionID stri
 }
 
 func (h *CommandHandler) HandleSelectSession(ctx context.Context) error {
+	log.Printf("[CMD] HandleSelectSession: started")
 	sessions, err := h.ocClient.ListSessions()
 	if err != nil {
+		log.Printf("[CMD] HandleSelectSession: ListSessions error: %v", err)
 		return fmt.Errorf("list sessions: %w", err)
 	}
+	log.Printf("[CMD] HandleSelectSession: got %d total sessions", len(sessions))
 
 	primarySessions := []opencode.Session{}
 	for _, sess := range sessions {
@@ -174,8 +399,10 @@ func (h *CommandHandler) HandleSelectSession(ctx context.Context) error {
 			primarySessions = append(primarySessions, sess)
 		}
 	}
+	log.Printf("[CMD] HandleSelectSession: found %d primary sessions", len(primarySessions))
 
 	if len(primarySessions) == 0 {
+		log.Printf("[CMD] HandleSelectSession: no primary sessions, sending error")
 		_, err := h.tgBot.SendMessage(ctx, "No primary sessions found.")
 		return err
 	}
@@ -184,9 +411,11 @@ func (h *CommandHandler) HandleSelectSession(ctx context.Context) error {
 	h.sessionCacheKey = fmt.Sprintf("cache_%d", time.Now().Unix())
 
 	currentID := h.appState.GetCurrentSession()
+	log.Printf("[CMD] HandleSelectSession: currentID=%s", currentID)
 
 	const sessionsPerPage = 8
 	totalPages := (len(primarySessions) + sessionsPerPage - 1) / sessionsPerPage
+	log.Printf("[CMD] HandleSelectSession: showing page 0/%d", totalPages)
 
 	return h.showSessionPage(ctx, primarySessions, currentID, 0, totalPages)
 }
@@ -212,24 +441,34 @@ func (h *CommandHandler) showSessionPage(ctx context.Context, sessions []opencod
 		end = len(sessions)
 	}
 
+	log.Printf("[CMD] showSessionPage: page=%d, start=%d, end=%d, total=%d", page, start, end, len(sessions))
 	pageSessions := sessions[start:end]
 
 	keyboard := h.buildSessionKeyboard(pageSessions, currentID, page, totalPages)
+	log.Printf("[CMD] showSessionPage: keyboard built with %d rows", len(keyboard.InlineKeyboard))
 
 	msg := fmt.Sprintf("📋 <b>Select Session</b> (page %d/%d)", page+1, totalPages)
-	_, err := h.tgBot.SendMessageWithKeyboard(ctx, msg, keyboard)
-	return err
+	log.Printf("[CMD] showSessionPage: sending message with keyboard...")
+	msgID, err := h.tgBot.SendMessageWithKeyboard(ctx, msg, keyboard)
+	if err != nil {
+		log.Printf("[CMD] showSessionPage: SendMessageWithKeyboard failed: %v", err)
+		return err
+	}
+	log.Printf("[CMD] showSessionPage: message sent successfully, msgID=%d", msgID)
+	return nil
 }
 
 func (h *CommandHandler) buildSessionKeyboard(sessions []opencode.Session, currentID string, page, totalPages int) *models.InlineKeyboardMarkup {
 	var rows [][]models.InlineKeyboardButton
 
 	for _, sess := range sessions {
+		dirDisplay := h.shortenDirectory(sess.Directory)
+
 		var label string
 		if sess.ID == currentID {
-			label = fmt.Sprintf("🟢 %s (%s)", sess.Title, sess.Slug)
+			label = fmt.Sprintf("🟢 %s [%s]", sess.Title, dirDisplay)
 		} else {
-			label = fmt.Sprintf("%s (%s)", sess.Title, sess.Slug)
+			label = fmt.Sprintf("%s [%s]", sess.Title, dirDisplay)
 		}
 
 		if len(label) > 60 {
@@ -272,6 +511,40 @@ func (h *CommandHandler) buildSessionKeyboard(sessions []opencode.Session, curre
 	return &models.InlineKeyboardMarkup{
 		InlineKeyboard: rows,
 	}
+}
+
+func (h *CommandHandler) shortenDirectory(dir string) string {
+	if dir == "" || dir == "." {
+		return "."
+	}
+	if dir == "/" {
+		return "/"
+	}
+
+	if strings.HasPrefix(dir, "/Users/master/") {
+		shortened := "~/" + strings.TrimPrefix(dir, "/Users/master/")
+		if len(shortened) > 20 {
+			parts := strings.Split(shortened, "/")
+			if len(parts) > 2 {
+				return "~/" + parts[len(parts)-1]
+			}
+		}
+		return shortened
+	}
+
+	if strings.HasPrefix(dir, "/Volumes/") {
+		parts := strings.Split(dir, "/")
+		if len(parts) >= 3 {
+			return "/" + parts[2] + "/..."
+		}
+	}
+
+	if len(dir) > 20 {
+		parts := strings.Split(dir, "/")
+		return ".../" + parts[len(parts)-1]
+	}
+
+	return dir
 }
 
 func (h *CommandHandler) HandleStatus(ctx context.Context) error {
@@ -352,7 +625,9 @@ func (h *CommandHandler) HandleHelp(ctx context.Context) error {
 /newsession [title] - Create a new session
 /sessions - List primary sessions
 /selectsession - Select session from menu
+/deletesessions - Delete sessions (interactive menu)
 /session &lt;id&gt; - Switch to a session
+/deletesession &lt;id&gt; - Delete a session directly
 /abort - Abort current session
 /status - Show current status
 /switch [agent] - Switch OHO agent

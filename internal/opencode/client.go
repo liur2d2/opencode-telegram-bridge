@@ -74,12 +74,10 @@ func (c *Client) Health() (map[string]interface{}, error) {
 	return healthData, nil
 }
 
-// ListSessions retrieves all sessions
+// ListSessions retrieves all sessions (without directory filter for Telegram UI)
 func (c *Client) ListSessions() ([]Session, error) {
 	url := c.config.BaseURL + "/session"
-	if c.config.Directory != "" {
-		url += "?directory=" + c.config.Directory
-	}
+	// Do NOT filter by directory - show all sessions across all directories
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -462,4 +460,31 @@ func (c *Client) GetConfig() (map[string]interface{}, error) {
 	}
 
 	return configData, nil
+}
+
+func (c *Client) GetMessages(sessionID string, limit int) ([]Message, error) {
+	url := fmt.Sprintf("%s/session/%s/messages?limit=%d", c.config.BaseURL, sessionID, limit)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create get messages request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get messages: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get messages failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var messages []Message
+	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
+		return nil, fmt.Errorf("decode messages: %w", err)
+	}
+
+	return messages, nil
 }

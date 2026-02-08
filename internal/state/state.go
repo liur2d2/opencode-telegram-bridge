@@ -1,6 +1,13 @@
 package state
 
-import "sync"
+import (
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+)
 
 type SessionStatus int
 
@@ -17,20 +24,44 @@ type AppState struct {
 	currentModel     string
 	chatAgentMap     map[string]string
 	sessionStatus    map[string]SessionStatus
+	stateFile        string
 }
 
-func NewAppState() *AppState {
-	return &AppState{
+func NewAppState(stateFile string) *AppState {
+	state := &AppState{
 		currentAgent:  "sisyphus",
 		sessionStatus: make(map[string]SessionStatus),
 		chatAgentMap:  make(map[string]string),
+		stateFile:     stateFile,
 	}
+
+	if stateFile != "" {
+		if sessionID, err := LoadSessionState(stateFile); err == nil && sessionID != "" {
+			state.currentSessionID = sessionID
+			log.Printf("[STATE] Loaded saved session: %s", sessionID)
+		} else if err != nil {
+			log.Printf("[STATE] Failed to load session state: %v", err)
+		}
+	}
+
+	return state
+}
+
+func NewAppStateForTest() *AppState {
+	return NewAppState("")
 }
 
 func (s *AppState) SetCurrentSession(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.currentSessionID = sessionID
+
+	// Persist to file
+	if s.stateFile != "" {
+		if err := SaveSessionState(s.stateFile, sessionID); err != nil {
+			log.Printf("[ERROR] Failed to save session state: %v", err)
+		}
+	}
 }
 
 func (s *AppState) GetCurrentSession() string {
@@ -119,4 +150,61 @@ func (s *AppState) GetAgentForChat(chatID string) string {
 		return agent
 	}
 	return s.currentAgent
+}
+
+// LoadSessionState loads the saved session ID from a file.
+// Returns empty string if file doesn't exist (first run).
+func LoadSessionState(filePath string) (string, error) {
+	// Expand ~ to home directory
+	expanded, err := expandHome(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to expand path: %w", err)
+	}
+
+	// Read the file
+	data, err := os.ReadFile(expanded)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist - first run
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read state file: %w", err)
+	}
+
+	// Return trimmed session ID
+	sessionID := strings.TrimSpace(string(data))
+	return sessionID, nil
+}
+
+// SaveSessionState saves the session ID to a file atomically.
+// Uses write-to-temp-file + rename pattern to prevent corruption.
+func SaveSessionState(filePath string, sessionID string) error {
+	// Expand ~ to home directory
+	expanded, err := expandHome(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to expand path: %w", err)
+	}
+
+	// Ensure directory exists
+	dir := filepath.Dir(expanded)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Write to temp file first
+	tempFile := expanded + ".tmp"
+	sessionBytes := []byte(sessionID)
+
+	if err := os.WriteFile(tempFile, sessionBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	// Atomically rename temp file to target file
+	if err := os.Rename(tempFile, expanded); err != nil {
+		// Clean up temp file if rename failed
+		os.Remove(tempFile)
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	return nil
 }

@@ -56,7 +56,7 @@ func (m *MockSessionTelegramBot) SendMessage(ctx context.Context, text string) (
 func TestCmdNewSession(t *testing.T) {
 	mockOC := new(MockSessionOpenCodeClient)
 	mockTG := new(MockSessionTelegramBot)
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 
 	session := &opencode.Session{
 		ID:    "ses_new",
@@ -84,7 +84,7 @@ func TestCmdNewSessionDefault(t *testing.T) {
 	mockOC := new(MockSessionOpenCodeClient)
 	_ = mockOC
 	mockTG := new(MockSessionTelegramBot)
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 
 	session := &opencode.Session{
 		ID:    "ses_auto",
@@ -109,7 +109,7 @@ func TestCmdNewSessionDefault(t *testing.T) {
 func TestCmdSessions(t *testing.T) {
 	mockOC := new(MockSessionOpenCodeClient)
 	mockTG := new(MockSessionTelegramBot)
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 
 	sessions := []opencode.Session{
 		{ID: "ses_1", Title: "Session 1"},
@@ -134,7 +134,7 @@ func TestCmdSessions(t *testing.T) {
 func TestCmdAbort(t *testing.T) {
 	mockOC := new(MockSessionOpenCodeClient)
 	mockTG := new(MockSessionTelegramBot)
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 
 	appState.SetCurrentSession("ses_active")
 
@@ -152,7 +152,7 @@ func TestCmdAbort(t *testing.T) {
 
 func TestCmdAbortNoSession(t *testing.T) {
 	mockTG := new(MockSessionTelegramBot)
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 
 	assert.Equal(t, "", appState.GetCurrentSession())
 
@@ -164,7 +164,7 @@ func TestCmdAbortNoSession(t *testing.T) {
 func TestCmdStatus(t *testing.T) {
 	mockOC := new(MockSessionOpenCodeClient)
 	mockTG := new(MockSessionTelegramBot)
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 
 	appState.SetCurrentSession("ses_current")
 	appState.SetCurrentAgent("prometheus")
@@ -206,7 +206,7 @@ func TestCmdHelp(t *testing.T) {
 func TestCmdSelectSession(t *testing.T) {
 	mockOC := new(MockSessionOpenCodeClient)
 	mockTG := new(MockSessionTelegramBot)
-	appState := state.NewAppState()
+	appState := state.NewAppStateForTest()
 
 	sessions := []opencode.Session{
 		{ID: "ses_a", Title: "Session A"},

@@ -42,6 +42,31 @@ type QuestionReplyRequest struct {
 	Answers []QuestionAnswer `json:"answers,omitempty"`
 }
 
+// MessageInfo represents message metadata
+type MessageInfo struct {
+	ID        string  `json:"id"`
+	SessionID string  `json:"sessionID"`
+	Role      string  `json:"role"` // "user" or "assistant"
+	Status    *string `json:"status,omitempty"`
+	Time      *struct {
+		Created   *time.Time `json:"created,omitempty"`
+		Started   *time.Time `json:"started,omitempty"`
+		Completed *time.Time `json:"completed,omitempty"`
+	} `json:"time,omitempty"`
+}
+
+// MessagePart represents a part of a message
+type MessagePart struct {
+	Type string `json:"type"` // "text", "image", etc.
+	Text string `json:"text,omitempty"`
+}
+
+// Message represents a complete message with info and parts
+type Message struct {
+	Info  MessageInfo   `json:"info"`
+	Parts []MessagePart `json:"parts"`
+}
+
 // PermissionRequest represents a permission request from the AI
 type PermissionRequest struct {
 	ID         string                 `json:"id"`
@@ -197,7 +222,8 @@ type EventMessageUpdated struct {
 			Mode       string `json:"mode,omitempty"`
 			Agent      string `json:"agent,omitempty"`
 		} `json:"info,omitempty"`
-		Parts []interface{} `json:"parts,omitempty"`
+		Parts   []interface{} `json:"parts,omitempty"`
+		Content *string       `json:"content,omitempty"`
 	} `json:"properties"`
 }
 
@@ -214,7 +240,8 @@ type EventMessagePartUpdated struct {
 type EventSessionIdle struct {
 	Type       string `json:"type"`
 	Properties struct {
-		SessionID string `json:"sessionID"`
+		SessionID string  `json:"sessionID"`
+		Content   *string `json:"content,omitempty"`
 	} `json:"properties"`
 }
 

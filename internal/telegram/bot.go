@@ -188,6 +188,7 @@ func (b *Bot) SetMyCommands(ctx context.Context) error {
 		{Command: "help", Description: "顯示所有可用指令"},
 		{Command: "sessions", Description: "列出 sessions（表格檢視）"},
 		{Command: "selectsession", Description: "選擇 session（互動選單）"},
+		{Command: "deletesessions", Description: "刪除 session（互動選單）"},
 		{Command: "status", Description: "顯示目前狀態"},
 		{Command: "model", Description: "選擇 AI 模型"},
 		{Command: "route", Description: "設定 agent 路由"},
@@ -264,6 +265,9 @@ func (b *Bot) RegisterTextHandler(handler TextHandler) {
 			update.Message.Text != "" &&
 			len(update.Message.Text) > 0 &&
 			update.Message.Text[0] != '/'
+		if isMatch {
+			fmt.Printf("[TEXT] Received text message: %q\n", update.Message.Text)
+		}
 		return isMatch
 	}, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
 		defer func() {
@@ -291,6 +295,7 @@ func (b *Bot) RegisterCommandHandler(command string, handler CommandHandler) {
 			args = text[len(command)+2:]
 		}
 
+		fmt.Printf("[CMD] Executing command: %s, args: %q\n", command, args)
 		handler(ctx, args)
 	})
 }

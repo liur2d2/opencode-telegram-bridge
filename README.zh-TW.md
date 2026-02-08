@@ -4,14 +4,106 @@
 
 Telegram ↔ OpenCode 雙向橋接服務。透過 Telegram 完全控制 OpenCode，支援 session 管理、agent 切換與互動式問答/權限提示。
 
+## 架構
+
+本專案採用 **混合 plugin + service 架構**：
+
+```
+OpenCode Events → Plugin (TypeScript) → HTTP Webhook → Bridge Service (Go) → Telegram Bot
+```
+
+**元件說明:**
+1. **OpenCode Plugin** (`~/.config/opencode/plugin/telegram-bridge/`)
+   - TypeScript plugin，掛鉤 OpenCode 事件
+   - 透過 HTTP webhook 傳送事件到 Bridge service
+   - OpenCode 啟動時自動載入
+
+2. **Bridge Service** (Go 二進位檔 + launchd)
+   - 透過 HTTP webhook 接收來自 plugin 的事件
+   - 管理 Telegram ↔ OpenCode 雙向通訊
+   - 以背景服務方式執行，登入時自動啟動
+
+**優勢:**
+- ✅ 隨 OpenCode 自動啟動（無需手動管理服務）
+- ✅ 終端機關閉後仍持續執行（launchd daemon）
+- ✅ 保留完整雙向功能
+- ✅ 職責清楚分離
+
 ## 安裝與部署
 
-### 快速開始 (macOS LaunchAgent)
+### 前置需求
 
-1. **編輯 plist 檔案，填入你的憑證：**
+1. **OpenCode 必須已安裝並設定完成**
    ```bash
-   nano configs/com.opencode.telegram-bridge.plist
+   opencode serve --port 54321
    ```
+
+2. **取得 Telegram Bot Token**
+   - 在 Telegram 上傳訊息給 @BotFather
+   - 建立新 bot 並取得 token
+
+3. **取得你的 Telegram Chat ID**
+   - 在 Telegram 上傳訊息給 @userinfobot
+   - 記下你的 Chat ID
+
+### 安裝步驟
+
+1. **建置 Bridge Service:**
+   ```bash
+   cd ~/opencode-telegram
+   go build -o opencode-telegram ./cmd
+   ```
+
+2. **建置 OpenCode Plugin:**
+   ```bash
+   cd ~/.config/opencode/plugin/telegram-bridge
+   npm install
+   npm run build
+   ```
+
+3. **設定 OpenCode 載入 plugin:**
+   
+   編輯 `~/.config/opencode/opencode.json`:
+   ```json
+   {
+     "plugin": ["telegram-bridge"]
+   }
+   ```
+
+4. **建立 plugin 設定檔:**
+   
+   建立 `~/.config/opencode/telegram-bridge.json`:
+   ```json
+   {
+     "webhookUrl": "http://localhost:8888/webhook",
+     "enabled": true
+   }
+   ```
+
+5. **設定 launchd service:**
+   
+   編輯 `~/Library/LaunchAgents/com.opencode.telegram.bridge.plist`:
+   - 將 `TELEGRAM_BOT_TOKEN` 替換為你的 bot token
+   - 將 `TELEGRAM_CHAT_ID` 替換為你的 chat ID
+   - 若需要可調整路徑
+
+6. **載入服務:**
+   ```bash
+   launchctl load ~/Library/LaunchAgents/com.opencode.telegram.bridge.plist
+   ```
+
+7. **驗證服務已執行:**
+   ```bash
+   launchctl list | grep telegram
+   curl http://localhost:8888/health
+   ```
+
+### 解除安裝
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.opencode.telegram.bridge.plist
+rm ~/Library/LaunchAgents/com.opencode.telegram.bridge.plist
+```
 
    替換以下佔位符：
    - `YOUR_USERNAME` → 你的 macOS 使用者名稱（例如：`john`）
@@ -67,55 +159,35 @@ rm ~/Library/LaunchAgents/com.opencode.telegram-bridge.plist
 
 ### 環境變數
 
-**必需：**
-- `TELEGRAM_BOT_TOKEN`: 你的 Telegram bot token（從 @BotFather 取得）
-- `TELEGRAM_CHAT_ID`: 你的 chat ID（透過對 bot 傳送 `/chatid` 指令取得）
+launchd service (`~/Library/LaunchAgents/com.opencode.telegram.bridge.plist`) 設定:
 
-**選填：**
+**必需:**
+- `TELEGRAM_BOT_TOKEN`: 你的 Telegram bot token（從 @BotFather 取得）
+- `TELEGRAM_CHAT_ID`: 你的 chat ID
+
+**選填:**
 - `OPENCODE_BASE_URL`: OpenCode 伺服器 URL（預設：`http://localhost:54321`）
 - `OPENCODE_DIRECTORY`: OpenCode 設定檔目錄（預設：`~/.config/opencode`）
-- `OPENCODE_SERVER_PASSWORD`: 如需驗證則填入伺服器密碼
+- `USE_PLUGIN_MODE`: 啟用 plugin 模式（預設：`true`）
+- `PLUGIN_WEBHOOK_PORT`: Plugin webhook port（預設：`8888`）
+- `HEALTH_PORT`: Health/metrics endpoint port（預設：`8080`）
 
-### LaunchAgent Plist 詳細說明
+### LaunchAgent 設定
 
-plist 檔案（`configs/com.opencode.telegram-bridge.plist`）設定了：
+plist 設定了:
 
-- **Program**: 二進位檔案路徑
-- **WorkingDirectory**: 專案根目錄
-- **EnvironmentVariables**: 所有設定透過環境變數（程式碼中不含敏感資訊）
 - **RunAtLoad**: 登入時自動啟動
 - **KeepAlive**: 當機時自動重啟
-  - `SuccessfulExit: false` → 即使成功結束也重啟（daemon 行為）
-- **StandardOutPath**: 日誌輸出至 `~/Library/Logs/opencode-telegram/stdout.log`
-- **StandardErrorPath**: 錯誤輸出至 `~/Library/Logs/opencode-telegram/stderr.log`
+- **StandardOutPath**: 日誌輸出至 `~/.local/var/log/opencode-telegram.log`
+- **StandardErrorPath**: 錯誤輸出至 `~/.local/var/log/opencode-telegram-error.log`
 
 ### 日誌檔案
 
-日誌寫入：`~/Library/Logs/opencode-telegram/`
-
-- `stdout.log` — 一般日誌
-- `stderr.log` — 錯誤日誌
-
-即時查看日誌：
+即時查看日誌:
 ```bash
-tail -f ~/Library/Logs/opencode-telegram/stdout.log
-tail -f ~/Library/Logs/opencode-telegram/stderr.log
+tail -f ~/.local/var/log/opencode-telegram.log
+tail -f ~/.local/var/log/opencode-telegram-error.log
 ```
-
-## 從原始碼建置
-
-```bash
-go build -o opencode-telegram ./cmd
-```
-
-## 驗證清單
-
-✅ Plist 語法正確（`plutil -lint`）  
-✅ 使用佔位符供使用者填入數值  
-✅ KeepAlive 設定為自動重啟  
-✅ 日誌導向 `~/Library/Logs/opencode-telegram/`  
-✅ 安裝腳本處理路徑展開（`$HOME`）  
-✅ 服務能用 `launchctl` 順利載入/卸載
 
 ## 使用方式
 
@@ -142,31 +214,180 @@ go build -o opencode-telegram ./cmd
 - 訊息上的 Reaction（👍👎）會轉發給 AI
 - Sticker 會被描述後傳送給 AI
 
-## 架構
+## 開發
 
-- **Bridge**: 協調 Telegram ↔ OpenCode 雙向通訊
-- **OpenCode Client**: OpenCode API 的 HTTP 封裝器 + SSE 事件消費者
-- **Telegram Bot**: `go-telegram/bot` 的封裝，具訊息格式化與鍵盤功能
-- **State Management**: Goroutine-safe 的 session/agent 狀態 + callback ID 登錄
-- **Handlers**: 指令、agent、問題、權限、訊息轉發處理器
+### 從原始碼建置
+
+**Bridge Service:**
+```bash
+cd ~/opencode-telegram
+go build -o opencode-telegram ./cmd
+```
+
+**OpenCode Plugin:**
+```bash
+cd ~/.config/opencode/plugin/telegram-bridge
+npm run build
+```
+
+### 開發模式執行
+
+**舊版 SSE 模式（不使用 plugin）:**
+```bash
+export USE_PLUGIN_MODE=false
+export TELEGRAM_BOT_TOKEN="your-token"
+export TELEGRAM_CHAT_ID="your-chat-id"
+./opencode-telegram
+```
+
+**Plugin 模式（推薦）:**
+1. 確保 plugin 已建置並在 `opencode.json` 中註冊
+2. 以 `USE_PLUGIN_MODE=true` 啟動 bridge service
+3. 以 `opencode serve` 啟動 OpenCode
+
+### 測試 Webhook
+
+手動測試 webhook endpoint:
+```bash
+curl -X POST http://localhost:8888/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"type":"session.created","data":{"sessionId":"test","directory":"/test"},"timestamp":1707378800000}'
+```
+
+健康檢查:
+```bash
+curl http://localhost:8888/health
+curl http://localhost:8080/metrics
+```
+
+## 技術架構
+
+### 元件說明
+
+**OpenCode Plugin** (`~/.config/opencode/plugin/telegram-bridge/`):
+- TypeScript plugin 使用 `@opencode-ai/plugin` SDK
+- 掛鉤事件: `session.created`, `message.updated`, `session.idle`
+- 傳送 HTTP POST 到 webhook server
+- 設定檔: `~/.config/opencode/telegram-bridge.json`
+
+**Webhook Server** (`internal/webhook/server.go`):
+- 接收來自 plugin 的 HTTP webhooks
+- 轉換為內部 SSE Event 格式
+- 轉發到 Bridge event handler
+- Endpoints: `/webhook`, `/health`
+
+**Bridge Service** (`internal/bridge/bridge.go`):
+- 協調 Telegram ↔ OpenCode 雙向通訊
+- Debouncing、訊息串流、權限/問題處理
+- Goroutine-safe 狀態管理
+
+**Telegram Bot** (`internal/telegram/bot.go`):
+- `go-telegram/bot` library 的封裝
+- 訊息格式化（HTML）、inline keyboards
+- Polling 模式（不需要 webhook）
+
+**State Management** (`internal/state/`):
+- Session/agent 狀態追蹤
+- Callback ID registry（inline keyboards 的短 ID）
+- Goroutine-safe with sync.Map
+
+### 事件流程
+
+```
+使用者在 Telegram 傳送訊息
+  ↓
+Telegram Bot 接收 update
+  ↓
+Bridge.HandleUserMessage()
+  ↓
+OpenCode Client.TriggerPrompt()
+  ↓
+OpenCode 處理請求
+  ↓
+Plugin 接收事件 (session.idle, message.updated)
+  ↓
+Plugin 傳送 HTTP POST 到 Webhook Server
+  ↓
+Webhook Server 轉換為 SSE Event
+  ↓
+Bridge.HandleSSEEvent()
+  ↓
+Telegram Bot 傳送回應
+```
 
 ## 疑難排解
 
-**服務無法啟動：**
+### 服務問題
+
+**服務無法啟動:**
 ```bash
-launchctl load ~/Library/LaunchAgents/com.opencode.telegram-bridge.plist
-launchctl list | grep com.opencode.telegram-bridge
-cat ~/Library/Logs/opencode-telegram/stderr.log
+launchctl list | grep telegram
+tail -f ~/.local/var/log/opencode-telegram-error.log
 ```
 
-**缺少憑證：**
-- 檢查 plist 中的 TELEGRAM_BOT_TOKEN 與 TELEGRAM_CHAT_ID
-- 查看日誌中的變數缺失錯誤
+**Webhook server 未監聽:**
+```bash
+lsof -i :8888
+curl http://localhost:8888/health
+```
 
-**OpenCode 無法連線：**
-- 檢查 `OPENCODE_BASE_URL` 是否正確（預設：http://localhost:54321）
-- 確認 OpenCode 正在執行：`ps aux | grep "opencode serve"`
+**Plugin 未載入:**
+```bash
+cat ~/.config/opencode/opencode.json
+ls -la ~/.config/opencode/plugin/telegram-bridge/dist/
+```
 
-**服務持續重啟：**
-- 查看錯誤日誌：`tail -f ~/Library/Logs/opencode-telegram/stderr.log`
-- 確認 plist 中的所有環境變數都已正確設定
+### 連線問題
+
+**OpenCode 無法連線:**
+```bash
+curl http://localhost:54321/health
+ps aux | grep "opencode serve"
+lsof -i :54321
+```
+
+**Telegram bot 衝突:**
+- 錯誤: "terminated by other getUpdates request"
+- 解決方式: 同一時間只能有一個 bot 實例進行 polling
+  ```bash
+  killall opencode-telegram
+  launchctl unload ~/Library/LaunchAgents/com.opencode.telegram.bridge.plist
+  launchctl load ~/Library/LaunchAgents/com.opencode.telegram.bridge.plist
+  ```
+
+### Port 衝突
+
+**Port 8080 或 8888 已被使用:**
+```bash
+lsof -i :8080
+lsof -i :8888
+kill <PID>
+```
+
+或在 plist 中變更 port:
+```xml
+<key>PLUGIN_WEBHOOK_PORT</key>
+<string>9999</string>
+<key>HEALTH_PORT</key>
+<string>9090</string>
+```
+
+### Plugin 問題
+
+**Plugin 未傳送 webhooks:**
+1. 檢查 OpenCode 日誌是否有 plugin 錯誤
+2. 驗證 `~/.config/opencode/telegram-bridge.json` 中的 webhook URL
+3. 手動測試 webhook:
+   ```bash
+   curl -X POST http://localhost:8888/webhook \
+     -H "Content-Type: application/json" \
+     -d '{"type":"session.idle","data":{"sessionId":"test"},"timestamp":1707378800000}'
+   ```
+
+**Plugin 建置錯誤:**
+```bash
+cd ~/.config/opencode/plugin/telegram-bridge
+rm -rf node_modules dist
+npm install
+npm run build
+```

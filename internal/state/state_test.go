@@ -8,7 +8,7 @@ import (
 
 // TestNewState tests that AppState can be created with proper defaults
 func TestNewState(t *testing.T) {
-	state := NewAppState()
+	state := NewAppStateForTest()
 	if state == nil {
 		t.Fatal("NewAppState returned nil")
 	}
@@ -24,7 +24,7 @@ func TestNewState(t *testing.T) {
 
 // TestSetCurrentSession tests setting and getting current session ID
 func TestSetCurrentSession(t *testing.T) {
-	state := NewAppState()
+	state := NewAppStateForTest()
 	sessionID := "ses_abc123"
 
 	state.SetCurrentSession(sessionID)
@@ -35,7 +35,7 @@ func TestSetCurrentSession(t *testing.T) {
 
 // TestSetCurrentAgent tests setting and getting current agent
 func TestSetCurrentAgent(t *testing.T) {
-	state := NewAppState()
+	state := NewAppStateForTest()
 	agent := "prometheus"
 
 	state.SetCurrentAgent(agent)
@@ -46,7 +46,7 @@ func TestSetCurrentAgent(t *testing.T) {
 
 // TestSessionStatus tests setting and getting session status
 func TestSessionStatus(t *testing.T) {
-	state := NewAppState()
+	state := NewAppStateForTest()
 	sessionID := "ses_test"
 
 	state.SetSessionStatus(sessionID, SessionBusy)
@@ -67,7 +67,7 @@ func TestSessionStatus(t *testing.T) {
 
 // TestConcurrentAccess tests that state is goroutine-safe
 func TestConcurrentAccess(t *testing.T) {
-	state := NewAppState()
+	state := NewAppStateForTest()
 	errors := make(chan string, 100)
 	var wg sync.WaitGroup
 
