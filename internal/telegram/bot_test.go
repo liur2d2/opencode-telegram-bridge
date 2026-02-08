@@ -12,7 +12,7 @@ func TestNewBot(t *testing.T) {
 	token := "test-token"
 	chatID := int64(123456789)
 
-	b := NewBot(token, chatID)
+	b := NewBot(token, chatID, 0)
 
 	if b == nil {
 		t.Fatal("NewBot returned nil")
@@ -47,7 +47,7 @@ func TestRegisterCommand(t *testing.T) {
 	token := "test-token"
 	chatID := int64(123456789)
 
-	b := NewBot(token, chatID)
+	b := NewBot(token, chatID, 0)
 
 	handlerCalled := false
 	handler := func(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -65,7 +65,7 @@ func TestRegisterCallbackPrefix(t *testing.T) {
 	token := "test-token"
 	chatID := int64(123456789)
 
-	b := NewBot(token, chatID)
+	b := NewBot(token, chatID, 0)
 
 	handlerCalled := false
 	handler := func(ctx context.Context, b *bot.Bot, update *models.Update) {

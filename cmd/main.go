@@ -21,6 +21,7 @@ func main() {
 	ocBaseURL := getenv("OPENCODE_BASE_URL", "http://localhost:54321")
 	ocDirectory := getenv("OPENCODE_DIRECTORY", ".")
 	debounceStr := getenv("TELEGRAM_DEBOUNCE_MS", "1000")
+	offsetFile := getenv("TELEGRAM_OFFSET_FILE", "~/.opencode-telegram-offset")
 
 	if botToken == "" || chatIDStr == "" {
 		log.Fatal("Missing required environment variables: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID")
@@ -38,11 +39,19 @@ func main() {
 	}
 	debounceDuration := time.Duration(debounceMs) * time.Millisecond
 
+	// Load saved offset from disk
+	currentOffset, err := state.LoadOffset(offsetFile)
+	if err != nil {
+		log.Printf("Warning: Failed to load offset: %v. Starting from beginning.", err)
+		currentOffset = 0
+	}
+
 	log.Printf("Starting OpenCode-Telegram Bridge...")
 	log.Printf("OpenCode URL: %s", ocBaseURL)
 	log.Printf("OpenCode Directory: %s", ocDirectory)
 	log.Printf("Telegram Chat ID: %d", chatID)
 	log.Printf("Debounce Duration: %dms", debounceMs)
+	log.Printf("Offset File: %s (current offset: %d)", offsetFile, currentOffset)
 
 	ocConfig := opencode.Config{
 		BaseURL:   ocBaseURL,
@@ -52,7 +61,8 @@ func main() {
 
 	sseConsumer := opencode.NewSSEConsumer(ocConfig)
 
-	tgBot := telegram.NewBot(botToken, chatID)
+	tgBot := telegram.NewBot(botToken, chatID, currentOffset)
+	tgBot.SetOffset(offsetFile)
 
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()

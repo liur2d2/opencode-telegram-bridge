@@ -26,6 +26,7 @@ type OpenCodeClient interface {
 	CreateSession(title *string, parentID *string) (*opencode.Session, error)
 	ListSessions() ([]opencode.Session, error)
 	SendPrompt(sessionID, text string, agent *string) (*opencode.SendPromptResponse, error)
+	SendPromptWithParts(sessionID string, parts []interface{}, agent *string) (*opencode.SendPromptResponse, error)
 	AbortSession(sessionID string) error
 	Health() (map[string]interface{}, error)
 	ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error
@@ -55,6 +56,13 @@ type DebounceBuffer struct {
 	mu           sync.Mutex
 }
 
+type StreamBuffer struct {
+	text          string
+	lastEdit      time.Time
+	thinkingMsgID int
+	mu            sync.Mutex
+}
+
 type Bridge struct {
 	ocClient        OpenCodeClient
 	tgBot           TelegramBot
@@ -63,11 +71,12 @@ type Bridge struct {
 	debounceMs      time.Duration
 	debounceBuffers sync.Map
 
-	thinkingMsgs sync.Map
-	permissions  sync.Map
-	questions    sync.Map
-	lastUpdate   sync.Map
-	updateMu     sync.Mutex
+	thinkingMsgs  sync.Map
+	streamBuffers sync.Map
+	permissions   sync.Map
+	questions     sync.Map
+	lastUpdate    sync.Map
+	updateMu      sync.Mutex
 }
 
 func NewBridge(ocClient OpenCodeClient, tgBot TelegramBot, appState *state.AppState, registry *state.IDRegistry, debounceMs time.Duration) *Bridge {
@@ -267,7 +276,10 @@ func (b *Bridge) HandleSSEEvent(event opencode.Event) {
 	case "permission.asked":
 		b.handlePermissionAsked(event)
 
-	case "message.updated", "message.part.updated":
+	case "message.part.updated":
+		b.handleMessagePartUpdated(event)
+
+	case "message.updated":
 		b.handleMessageUpdated(event)
 	}
 }
@@ -392,8 +404,85 @@ func (b *Bridge) handleMessageUpdated(event opencode.Event) {
 
 		// Clean up
 		b.thinkingMsgs.Delete(sessionID)
+		b.streamBuffers.Delete(sessionID)
 		b.state.SetSessionStatus(sessionID, state.SessionIdle)
 	}()
+}
+
+func (b *Bridge) handleMessagePartUpdated(event opencode.Event) {
+	partEvent, ok := event.Properties.(*opencode.EventMessagePartUpdated)
+	if !ok {
+		return
+	}
+
+	// Extract delta text
+	if partEvent.Properties.Delta == nil {
+		return
+	}
+	delta := *partEvent.Properties.Delta
+
+	// Extract sessionID from part
+	partData, ok := partEvent.Properties.Part.(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	sessionID, ok := partData["sessionID"].(string)
+	if !ok {
+		return
+	}
+
+	// Get thinking message ID
+	thinkingMsgIDInterface, ok := b.thinkingMsgs.Load(sessionID)
+	if !ok {
+		return
+	}
+
+	thinkingMsgID, ok := thinkingMsgIDInterface.(int)
+	if !ok {
+		return
+	}
+
+	// Get or create stream buffer
+	bufInterface, _ := b.streamBuffers.LoadOrStore(sessionID, &StreamBuffer{
+		text:          "",
+		lastEdit:      time.Time{},
+		thinkingMsgID: thinkingMsgID,
+	})
+
+	buf, ok := bufInterface.(*StreamBuffer)
+	if !ok {
+		return
+	}
+
+	// Accumulate delta
+	buf.mu.Lock()
+	buf.text += delta
+
+	// Check if we should edit the message
+	shouldEdit := time.Since(buf.lastEdit) > 500*time.Millisecond ||
+		strings.HasSuffix(buf.text, "\n\n")
+
+	if shouldEdit {
+		// Copy current text for async edit
+		textToSend := buf.text
+		buf.lastEdit = time.Now()
+		buf.mu.Unlock()
+
+		// Edit message asynchronously
+		go func() {
+			ctx := context.Background()
+			formattedText := telegram.FormatHTML(textToSend)
+			chunks := telegram.SplitMessage(formattedText, 4096)
+
+			if len(chunks) > 0 {
+				// Edit with first chunk, silently ignore "message is not modified" errors
+				_ = b.tgBot.EditMessage(ctx, thinkingMsgID, chunks[0])
+			}
+		}()
+	} else {
+		buf.mu.Unlock()
+	}
 }
 
 func (b *Bridge) Start(ctx context.Context, sseConsumer *opencode.SSEConsumer) {
@@ -496,6 +585,132 @@ func (b *Bridge) HandlePermissionCallback(ctx context.Context, shortKey string, 
 	b.permissions.Delete(shortKey)
 
 	return nil
+}
+
+// HandlePhotoMessage handles photo messages with vision API integration
+func (b *Bridge) HandlePhotoMessage(ctx context.Context, photos []models.PhotoSize, caption string, botToken string) error {
+	sessionID := b.state.GetCurrentSession()
+
+	if sessionID == "" {
+		title := "Telegram Chat"
+		session, err := b.ocClient.CreateSession(&title, nil)
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		sessionID = session.ID
+		b.state.SetCurrentSession(sessionID)
+	}
+
+	// Check if session is busy
+	if b.state.GetSessionStatus(sessionID) == state.SessionBusy {
+		_, err := b.tgBot.SendMessage(ctx, "⏳ Still processing your previous request...")
+		return err
+	}
+
+	b.state.SetSessionStatus(sessionID, state.SessionBusy)
+
+	thinkingMsgID, err := b.tgBot.SendMessage(ctx, "🖼️ Processing image...")
+	if err != nil {
+		b.state.SetSessionStatus(sessionID, state.SessionIdle)
+		return err
+	}
+
+	b.thinkingMsgs.Store(sessionID, thinkingMsgID)
+	_ = b.tgBot.SendTyping(ctx)
+
+	go b.sendPhotoPromptAsync(context.Background(), sessionID, photos, caption, botToken, thinkingMsgID)
+	return nil
+}
+
+func (b *Bridge) sendPhotoPromptAsync(ctx context.Context, sessionID string, photos []models.PhotoSize, caption string, botToken string, thinkingMsgID int) {
+	agent := b.state.GetCurrentAgent()
+
+	// Create done channel to signal typing goroutine to stop
+	done := make(chan struct{})
+	defer close(done)
+
+	// Launch typing indicator goroutine
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				_ = b.tgBot.SendTyping(context.Background())
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Get largest photo
+	largestPhoto := telegram.GetLargestPhoto(photos)
+	if largestPhoto == nil {
+		errorMsg := "❌ Error: No valid photo found"
+		b.tgBot.EditMessage(ctx, thinkingMsgID, errorMsg)
+		b.state.SetSessionStatus(sessionID, state.SessionError)
+		return
+	}
+
+	// Download photo
+	photoData, err := telegram.DownloadPhoto(ctx, botToken, largestPhoto.FileID)
+	if err != nil {
+		errorMsg := fmt.Sprintf("❌ Error downloading image: %s", err.Error())
+		b.tgBot.EditMessage(ctx, thinkingMsgID, errorMsg)
+		b.state.SetSessionStatus(sessionID, state.SessionError)
+		return
+	}
+
+	// Encode to base64
+	base64Image := telegram.EncodeBase64(photoData)
+
+	// Build parts array
+	parts := []interface{}{
+		opencode.ImagePartInput{
+			Type:     "image",
+			Image:    base64Image,
+			MimeType: "image/jpeg",
+		},
+	}
+
+	// Add caption as text part if present
+	if caption != "" {
+		parts = append(parts, opencode.TextPartInput{
+			Type: "text",
+			Text: caption,
+		})
+	}
+
+	// Send prompt with parts
+	resp, err := b.ocClient.SendPromptWithParts(sessionID, parts, &agent)
+	if err != nil {
+		errorMsg := fmt.Sprintf("❌ Error: %s", err.Error())
+		b.tgBot.EditMessage(ctx, thinkingMsgID, errorMsg)
+		b.state.SetSessionStatus(sessionID, state.SessionError)
+		return
+	}
+
+	responseText := b.extractResponseText(resp)
+	chunks := telegram.SplitMessage(responseText, 4096)
+
+	if len(chunks) > 0 {
+		if err := b.tgBot.EditMessage(ctx, thinkingMsgID, chunks[0]); err != nil {
+			b.tgBot.SendMessage(ctx, chunks[0])
+		}
+
+		for i := 1; i < len(chunks); i++ {
+			b.tgBot.SendMessage(ctx, chunks[i])
+		}
+	}
+
+	b.thinkingMsgs.Delete(sessionID)
+	b.state.SetSessionStatus(sessionID, state.SessionIdle)
+}
+
+// HandleUnsupportedMedia handles unsupported media types
+func (b *Bridge) HandleUnsupportedMedia(ctx context.Context) error {
+	_, err := b.tgBot.SendMessage(ctx, "⚠️ 目前僅支援圖片分析,其他媒體類型暫不支援")
+	return err
 }
 
 func (b *Bridge) RegisterHandlers() {
@@ -609,6 +824,18 @@ func (b *Bridge) RegisterHandlers() {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
 		}
 		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterPhotoHandler(func(ctx context.Context, photos []models.PhotoSize, caption string, botToken string) {
+		if err := b.HandlePhotoMessage(ctx, photos, caption, botToken); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterUnsupportedMediaHandler(func(ctx context.Context) {
+		if err := b.HandleUnsupportedMedia(ctx); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
 	})
 
 }

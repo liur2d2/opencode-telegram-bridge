@@ -483,7 +483,7 @@ Wave 6 (Final):
 
 ---
 
-- [ ] 4. Streaming Replies via SSE message.part.updated
+- [x] 4. Streaming Replies via SSE message.part.updated
 
   **What to do**:
   - In `internal/bridge/bridge.go`:
@@ -565,7 +565,7 @@ Wave 6 (Final):
 
 ---
 
-- [ ] 5. Image Media Pipeline (Download → OpenCode Vision API)
+- [x] 5. Image Media Pipeline (Download → OpenCode Vision API)
 
   **What to do**:
   - Create `internal/telegram/media.go`:
@@ -657,7 +657,7 @@ Wave 6 (Final):
 
 ---
 
-- [ ] 6. Typing Indicators
+- [x] 6. Typing Indicators
 
   **What to do**:
   - In `internal/telegram/bot.go`:
@@ -726,7 +726,7 @@ Wave 6 (Final):
 
 ---
 
-- [ ] 7. Update Offset Persistence
+- [x] 7. Update Offset Persistence
 
   **What to do**:
   - Create `internal/state/offset.go`:

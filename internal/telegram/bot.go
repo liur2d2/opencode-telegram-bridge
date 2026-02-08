@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -10,15 +11,20 @@ import (
 
 // Bot wraps the Telegram bot client
 type Bot struct {
-	bot    *bot.Bot
-	chatID int64
-	token  string
+	bot            *bot.Bot
+	chatID         int64
+	token          string
+	offset         int64
+	offsetFilePath string
+	maxUpdateID    int64
+	offsetMu       sync.Mutex
 }
 
-// NewBot creates a new Telegram bot instance
-func NewBot(token string, chatID int64) *Bot {
+// NewBot creates a new Telegram bot instance with optional initial offset
+func NewBot(token string, chatID int64, initialOffset int64) *Bot {
 	opts := []bot.Option{
 		bot.WithSkipGetMe(),
+		bot.WithInitialOffset(initialOffset),
 	}
 
 	b, err := bot.New(token, opts...)
@@ -27,14 +33,39 @@ func NewBot(token string, chatID int64) *Bot {
 	}
 
 	return &Bot{
-		bot:    b,
-		chatID: chatID,
-		token:  token,
+		bot:         b,
+		chatID:      chatID,
+		token:       token,
+		offset:      initialOffset,
+		maxUpdateID: initialOffset - 1,
 	}
 }
 
 func (b *Bot) Token() string {
 	return b.token
+}
+
+// SetOffset stores the offset file path for later persistence
+func (b *Bot) SetOffset(offsetFilePath string) {
+	b.offsetMu.Lock()
+	defer b.offsetMu.Unlock()
+	b.offsetFilePath = offsetFilePath
+}
+
+// GetMaxUpdateID returns the highest update ID seen so far
+func (b *Bot) GetMaxUpdateID() int64 {
+	b.offsetMu.Lock()
+	defer b.offsetMu.Unlock()
+	return b.maxUpdateID
+}
+
+// trackUpdateID records the highest update ID seen
+func (b *Bot) trackUpdateID(update *models.Update) {
+	b.offsetMu.Lock()
+	defer b.offsetMu.Unlock()
+	if update.ID > b.maxUpdateID {
+		b.maxUpdateID = update.ID
+	}
 }
 
 // SendMessage sends a message to the configured chat
@@ -141,6 +172,7 @@ func (b *Bot) RegisterTextHandler(handler TextHandler) {
 			}
 		}()
 
+		b.trackUpdateID(update)
 		handler(ctx, update.Message.Text)
 	})
 }
@@ -150,6 +182,8 @@ func (b *Bot) RegisterCommandHandler(command string, handler CommandHandler) {
 		if update.Message == nil {
 			return
 		}
+
+		b.trackUpdateID(update)
 
 		text := update.Message.Text
 		args := ""
@@ -167,6 +201,7 @@ func (b *Bot) RegisterCallbackHandler(prefix string, handler CallbackHandler) {
 			return
 		}
 
+		b.trackUpdateID(update)
 		b.AnswerCallback(ctx, update.CallbackQuery.ID)
 		handler(ctx, update.CallbackQuery.ID, update.CallbackQuery.Data)
 	})
@@ -184,6 +219,7 @@ func (b *Bot) RegisterPhotoHandler(handler PhotoHandler) {
 			}
 		}()
 
+		b.trackUpdateID(update)
 		caption := update.Message.Caption
 
 		handler(ctx, update.Message.Photo, caption, b.token)
@@ -211,6 +247,7 @@ func (b *Bot) RegisterUnsupportedMediaHandler(handler UnsupportedMediaHandler) {
 			}
 		}()
 
+		b.trackUpdateID(update)
 		handler(ctx)
 	})
 }

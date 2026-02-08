@@ -36,6 +36,14 @@ func (m *MockOpenCodeClient) SendPrompt(sessionID, text string, agent *string) (
 	return args.Get(0).(*opencode.SendPromptResponse), args.Error(1)
 }
 
+func (m *MockOpenCodeClient) SendPromptWithParts(sessionID string, parts []interface{}, agent *string) (*opencode.SendPromptResponse, error) {
+	args := m.Called(sessionID, parts, agent)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*opencode.SendPromptResponse), args.Error(1)
+}
+
 func (m *MockOpenCodeClient) AbortSession(sessionID string) error {
 	args := m.Called(sessionID)
 	return args.Error(0)
