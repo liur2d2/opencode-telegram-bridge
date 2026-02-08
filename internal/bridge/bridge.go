@@ -832,6 +832,13 @@ func (b *Bridge) RegisterHandlers() {
 		}
 	})
 
+	stickerHandler := NewStickerHandler(b.ocClient, b.tgBot, b.state)
+	b.tgBot.(*telegram.Bot).RegisterStickerHandler(func(ctx context.Context, emoji string, setName string) {
+		if err := stickerHandler.HandleSticker(ctx, emoji, setName); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+	})
+
 	b.tgBot.(*telegram.Bot).RegisterUnsupportedMediaHandler(func(ctx context.Context) {
 		if err := b.HandleUnsupportedMedia(ctx); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))

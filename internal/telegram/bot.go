@@ -25,6 +25,11 @@ func NewBot(token string, chatID int64, initialOffset int64) *Bot {
 	opts := []bot.Option{
 		bot.WithSkipGetMe(),
 		bot.WithInitialOffset(initialOffset),
+		bot.WithAllowedUpdates(bot.AllowedUpdates{
+			models.AllowedUpdateMessage,
+			models.AllowedUpdateCallbackQuery,
+			models.AllowedUpdateMessageReaction,
+		}),
 	}
 
 	b, err := bot.New(token, opts...)
@@ -226,6 +231,35 @@ func (b *Bot) RegisterPhotoHandler(handler PhotoHandler) {
 	})
 }
 
+type StickerHandler func(ctx context.Context, emoji string, setName string)
+
+func (b *Bot) RegisterStickerHandler(handler StickerHandler) {
+	b.bot.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+		return update.Message != nil && update.Message.Sticker != nil
+	}, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("[PANIC] Sticker handler panicked: %v\n", r)
+			}
+		}()
+
+		b.trackUpdateID(update)
+		sticker := update.Message.Sticker
+
+		// Reject animated/video stickers
+		if sticker.IsAnimated || sticker.IsVideo {
+			b.SendMessage(ctx, "⚠️ Animated/video stickers are not supported")
+			return
+		}
+
+		// Extract emoji and set name
+		emoji := sticker.Emoji
+		setName := sticker.SetName
+
+		handler(ctx, emoji, setName)
+	})
+}
+
 type UnsupportedMediaHandler func(ctx context.Context)
 
 func (b *Bot) RegisterUnsupportedMediaHandler(handler UnsupportedMediaHandler) {
@@ -238,7 +272,6 @@ func (b *Bot) RegisterUnsupportedMediaHandler(handler UnsupportedMediaHandler) {
 			update.Message.Video != nil ||
 			update.Message.Voice != nil ||
 			update.Message.VideoNote != nil ||
-			update.Message.Sticker != nil ||
 			update.Message.Animation != nil
 	}, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
 		defer func() {
@@ -249,5 +282,30 @@ func (b *Bot) RegisterUnsupportedMediaHandler(handler UnsupportedMediaHandler) {
 
 		b.trackUpdateID(update)
 		handler(ctx)
+	})
+}
+
+type ReactionHandler func(ctx context.Context, messageID int, userID int64, newReaction []models.ReactionType)
+
+func (b *Bot) RegisterReactionHandler(handler ReactionHandler) {
+	b.bot.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+		return update.MessageReaction != nil
+	}, func(ctx context.Context, botInstance *bot.Bot, update *models.Update) {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("[PANIC] Reaction handler panicked: %v\n", r)
+			}
+		}()
+
+		b.trackUpdateID(update)
+		reaction := update.MessageReaction
+
+		messageID := reaction.MessageID
+		userID := int64(0)
+		if reaction.User != nil {
+			userID = reaction.User.ID
+		}
+
+		handler(ctx, messageID, userID, reaction.NewReaction)
 	})
 }

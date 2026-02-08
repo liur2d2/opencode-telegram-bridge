@@ -40,6 +40,28 @@ func NewSSEConsumer(config Config) *SSEConsumer {
 	}
 }
 
+// NewSSEConsumerWithTransport creates a new SSE consumer with optional custom transport
+func NewSSEConsumerWithTransport(config Config, transport *http.Transport) *SSEConsumer {
+	if config.BaseURL == "" {
+		config.BaseURL = "http://localhost:54321"
+	}
+
+	httpClient := &http.Client{
+		Timeout: 0, // No timeout for SSE connections
+	}
+
+	if transport != nil {
+		httpClient.Transport = transport
+	}
+
+	return &SSEConsumer{
+		config:    config,
+		httpClient: httpClient,
+		eventChan: make(chan Event, 100),
+		closeChan: make(chan struct{}),
+	}
+}
+
 // Events returns the channel for receiving events
 func (s *SSEConsumer) Events() <-chan Event {
 	return s.eventChan

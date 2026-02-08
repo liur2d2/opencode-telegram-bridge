@@ -14,6 +14,7 @@ type AppState struct {
 	mu               sync.RWMutex
 	currentSessionID string
 	currentAgent     string
+	currentModel     string
 	sessionStatus    map[string]SessionStatus
 }
 
@@ -61,4 +62,16 @@ func (s *AppState) GetSessionStatus(sessionID string) SessionStatus {
 		return status
 	}
 	return SessionIdle
+}
+
+func (s *AppState) SetCurrentModel(model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentModel = model
+}
+
+func (s *AppState) GetCurrentModel() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentModel
 }

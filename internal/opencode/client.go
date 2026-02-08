@@ -29,6 +29,26 @@ func NewClient(config Config) *Client {
 	}
 }
 
+// NewClientWithTransport creates a new OpenCode client with optional custom transport
+func NewClientWithTransport(config Config, transport *http.Transport) *Client {
+	if config.BaseURL == "" {
+		config.BaseURL = "http://localhost:54321"
+	}
+
+	httpClient := &http.Client{
+		Timeout: 5 * time.Minute,
+	}
+
+	if transport != nil {
+		httpClient.Transport = transport
+	}
+
+	return &Client{
+		config:     config,
+		httpClient: httpClient,
+	}
+}
+
 func (c *Client) Health() (map[string]interface{}, error) {
 	req, err := http.NewRequest(http.MethodGet, c.config.BaseURL+"/health", nil)
 	if err != nil {
