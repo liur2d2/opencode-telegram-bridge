@@ -50,6 +50,10 @@ func (b *Bot) Token() string {
 	return b.token
 }
 
+func (b *Bot) ChatID() int64 {
+	return b.chatID
+}
+
 // SetOffset stores the offset file path for later persistence
 func (b *Bot) SetOffset(offsetFilePath string) {
 	b.offsetMu.Lock()
@@ -159,7 +163,6 @@ func (b *Bot) Start(ctx context.Context) {
 	b.bot.Start(ctx)
 }
 
-
 // StartWebhook starts the bot in webhook mode
 func (b *Bot) StartWebhook(ctx context.Context, webhookURL string, port string, secretToken string) error {
 	if port == "" {
@@ -193,6 +196,7 @@ func (b *Bot) StopWebhook(ctx context.Context) error {
 	}
 	return nil
 }
+
 type TextHandler func(ctx context.Context, text string)
 type CommandHandler func(ctx context.Context, args string)
 type CallbackHandler func(ctx context.Context, callbackID, data string)

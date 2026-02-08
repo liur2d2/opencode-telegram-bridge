@@ -66,6 +66,7 @@ type StreamBuffer struct {
 type Bridge struct {
 	ocClient        OpenCodeClient
 	tgBot           TelegramBot
+	chatID          string
 	state           *state.AppState
 	registry        *state.IDRegistry
 	debounceMs      time.Duration
@@ -80,18 +81,27 @@ type Bridge struct {
 }
 
 func NewBridge(ocClient OpenCodeClient, tgBot TelegramBot, appState *state.AppState, registry *state.IDRegistry, debounceMs time.Duration) *Bridge {
-	// Validate debounceMs: cap at 3000ms, default to 1000ms if <= 0 or > 3000ms
 	if debounceMs <= 0 || debounceMs > 3000*time.Millisecond {
 		debounceMs = 1000 * time.Millisecond
+	}
+
+	var chatID string
+	if bot, ok := tgBot.(*telegram.Bot); ok {
+		chatID = fmt.Sprintf("%d", bot.ChatID())
 	}
 
 	return &Bridge{
 		ocClient:   ocClient,
 		tgBot:      tgBot,
+		chatID:     chatID,
 		state:      appState,
 		registry:   registry,
 		debounceMs: debounceMs,
 	}
+}
+
+func (b *Bridge) getEffectiveAgent() string {
+	return b.state.GetAgentForChat(b.chatID)
 }
 
 func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
@@ -188,13 +198,11 @@ func (b *Bridge) flushDebounceBuffer(sessionID string) {
 }
 
 func (b *Bridge) sendPromptAsync(ctx context.Context, sessionID, text string, thinkingMsgID int) {
-	agent := b.state.GetCurrentAgent()
+	agent := b.getEffectiveAgent()
 
-	// Create done channel to signal typing goroutine to stop
 	done := make(chan struct{})
 	defer close(done)
 
-	// Launch typing indicator goroutine that refreshes every 4 seconds
 	go func() {
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
@@ -880,6 +888,12 @@ func (b *Bridge) RegisterHandlers() {
 	b.tgBot.(*telegram.Bot).RegisterUnsupportedMediaHandler(func(ctx context.Context) {
 		if err := b.HandleUnsupportedMedia(ctx); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterReactionHandler(func(ctx context.Context, messageID int, userID int64, newReaction []models.ReactionType) {
+		if err := b.HandleReaction(ctx, messageID, userID, newReaction); err != nil {
+			fmt.Printf("[BRIDGE] Error handling reaction: %v\n", err)
 		}
 	})
 

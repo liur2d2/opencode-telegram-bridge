@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/go-telegram/bot/models"
 
@@ -10,67 +11,82 @@ import (
 	"github.com/user/opencode-telegram/internal/state"
 )
 
-// reactionOpenCodeClient interface for sending prompts
+// ReactionHandler handles emoji reactions on bot messages
+type ReactionHandler struct {
+	ocClient  reactionOpenCodeClient
+	tgBot     reactionTelegramBot
+	appState  reactionAppState
+}
+
+// Interfaces for dependency injection
 type reactionOpenCodeClient interface {
 	SendPrompt(sessionID, text string, agent *string) (*opencode.SendPromptResponse, error)
 }
 
-// reactionTelegramBot interface for sending messages
 type reactionTelegramBot interface {
 	SendMessage(ctx context.Context, text string) (int, error)
 }
 
-// reactionAppState for app state access
 type reactionAppState interface {
 	GetCurrentSession() string
 	GetSessionStatus(sessionID string) state.SessionStatus
 }
 
-// ReactionHandler manages incoming message reactions
-type ReactionHandler struct {
-	ocClient reactionOpenCodeClient
-	tgBot    reactionTelegramBot
-	appState reactionAppState
-}
-
-// NewReactionHandler creates a new ReactionHandler
+// NewReactionHandler creates a new reaction handler
 func NewReactionHandler(ocClient reactionOpenCodeClient, tgBot reactionTelegramBot, appState reactionAppState) *ReactionHandler {
 	return &ReactionHandler{
-		ocClient: ocClient,
-		tgBot:    tgBot,
-		appState: appState,
+		ocClient:  ocClient,
+		tgBot:     tgBot,
+		appState:  appState,
 	}
 }
 
-// HandleReaction processes incoming message reactions
+// HandleReaction handles a reaction event
+// emoji: the emoji reaction (e.g. "👍")
+// messageID: the ID of the message being reacted to
 func (h *ReactionHandler) HandleReaction(ctx context.Context, emoji string, messageID int) error {
+	// Get current active session
 	sessionID := h.appState.GetCurrentSession()
-
-	// No active session—send acknowledgement
 	if sessionID == "" {
-		_, err := h.tgBot.SendMessage(ctx, fmt.Sprintf("👍 You reacted with %s to message #%d (no active session)", emoji, messageID))
-		return err
+		log.Printf("[REACTION] No active session, ignoring reaction")
+		// Silently ignore - reactions are best-effort optional
+		return nil
 	}
 
-	// Format reaction text
-	text := fmt.Sprintf("[User reacted with %s to message #%d]", emoji, messageID)
+	// Check session status
+	status := h.appState.GetSessionStatus(sessionID)
+	if status == state.SessionBusy {
+		log.Printf("[REACTION] Session is busy, skipping reaction for message %d", messageID)
+		return nil
+	}
 
-	// Send as regular prompt to current session
-	_, err := h.ocClient.SendPrompt(sessionID, text, nil)
-	return err
+	// Format and send reaction as text to AI
+	notificationText := fmt.Sprintf("[User reacted with %s to message #%d]", emoji, messageID)
+	_, err := h.ocClient.SendPrompt(sessionID, notificationText, nil)
+	if err != nil {
+		log.Printf("[REACTION] Failed to forward reaction: %v", err)
+		// Non-fatal: reactions are best-effort optional
+		return nil
+	}
+
+	log.Printf("[REACTION] Forwarded reaction %s for message %d to session %s", emoji, messageID, sessionID)
+	return nil
 }
 
-// ExtractEmojiFromReaction extracts emoji text from ReactionType array
+// ExtractEmojiFromReaction extracts emoji from a reaction array
+// Returns empty string if no emoji found (e.g. custom emoji or paid reactions)
 func ExtractEmojiFromReaction(reactions []models.ReactionType) string {
 	if len(reactions) == 0 {
 		return ""
 	}
 
-	// Take first reaction emoji
 	reaction := reactions[0]
-	if reaction.ReactionTypeEmoji != nil {
+
+	// Only extract emoji type reactions, not custom or paid
+	if reaction.Type == models.ReactionTypeTypeEmoji && reaction.ReactionTypeEmoji != nil {
 		return reaction.ReactionTypeEmoji.Emoji
 	}
 
+	// Return empty for custom emoji or paid reactions
 	return ""
 }

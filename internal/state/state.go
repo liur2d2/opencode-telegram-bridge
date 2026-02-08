@@ -15,7 +15,7 @@ type AppState struct {
 	currentSessionID string
 	currentAgent     string
 	currentModel     string
-	chatAgentMap map[string]string
+	chatAgentMap     map[string]string
 	sessionStatus    map[string]SessionStatus
 }
 
@@ -23,7 +23,7 @@ func NewAppState() *AppState {
 	return &AppState{
 		currentAgent:  "sisyphus",
 		sessionStatus: make(map[string]SessionStatus),
-		chatAgentMap: make(map[string]string),
+		chatAgentMap:  make(map[string]string),
 	}
 }
 
@@ -103,10 +103,20 @@ func (s *AppState) RemoveChatAgent(chatID string) {
 func (s *AppState) ListChatAgents() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// Return a copy to avoid external modification
 	result := make(map[string]string)
 	for k, v := range s.chatAgentMap {
 		result[k] = v
 	}
 	return result
+}
+
+// GetAgentForChat returns the agent to use for a given chat ID
+// Returns per-chat agent if set, otherwise returns currentAgent
+func (s *AppState) GetAgentForChat(chatID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if agent := s.chatAgentMap[chatID]; agent != "" {
+		return agent
+	}
+	return s.currentAgent
 }
