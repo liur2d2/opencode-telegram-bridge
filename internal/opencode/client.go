@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ func NewClient(config Config) *Client {
 	return &Client{
 		config: config,
 		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
+			Timeout: 60 * time.Second,
 		},
 	}
 }
@@ -36,7 +37,7 @@ func NewClientWithTransport(config Config, transport *http.Transport) *Client {
 	}
 
 	httpClient := &http.Client{
-		Timeout: 5 * time.Minute,
+		Timeout: 60 * time.Second,
 	}
 
 	if transport != nil {
@@ -250,6 +251,66 @@ func (c *Client) SendPromptWithParts(sessionID string, parts []interface{}, agen
 	return &response, nil
 }
 
+func (c *Client) TriggerPrompt(sessionID, text string, agent *string) error {
+	parts := []interface{}{
+		TextPartInput{
+			Type: "text",
+			Text: text,
+		},
+	}
+
+	reqBody := SendPromptRequest{
+		Agent:  agent,
+		System: nil,
+		Parts:  parts,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal send prompt request: %w", err)
+	}
+
+	url := c.config.BaseURL + "/session/" + sessionID + "/message"
+	if c.config.Directory != "" {
+		url += "?directory=" + c.config.Directory
+	}
+
+	fmt.Printf("[TriggerPrompt] Sending to: %s, text length: %d\n", url, len(text))
+
+	triggerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	req, err := http.NewRequestWithContext(triggerCtx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		fmt.Printf("[TriggerPrompt] Failed to create request: %v\n", err)
+		return fmt.Errorf("create trigger request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	elapsed := time.Since(start)
+	if err != nil {
+		if triggerCtx.Err() == context.DeadlineExceeded {
+			fmt.Printf("[TriggerPrompt] Timeout after %v (request likely sent, waiting for async processing via SSE)\n", elapsed)
+			return nil
+		}
+		fmt.Printf("[TriggerPrompt] Request failed after %v: %v\n", elapsed, err)
+		return fmt.Errorf("trigger prompt: %w", err)
+	}
+	defer resp.Body.Close()
+
+	fmt.Printf("[TriggerPrompt] Response status: %d (elapsed: %v)\n", resp.StatusCode, elapsed)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("[TriggerPrompt] Error response body: %s\n", string(body))
+		return fmt.Errorf("trigger prompt failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 // ListQuestions retrieves all pending questions
 func (c *Client) ListQuestions() ([]QuestionRequest, error) {
 	url := c.config.BaseURL + "/question"
@@ -377,4 +438,28 @@ func (c *Client) ReplyPermission(sessionID, permissionID string, response Permis
 	}
 
 	return nil
+}
+
+func (c *Client) GetConfig() (map[string]interface{}, error) {
+	req, err := http.NewRequest(http.MethodGet, c.config.BaseURL+"/config", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create config request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get config: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get config failed with status: %d", resp.StatusCode)
+	}
+
+	var configData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&configData); err != nil {
+		return nil, fmt.Errorf("decode config: %w", err)
+	}
+
+	return configData, nil
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/user/opencode-telegram/internal/metrics"
 )
 
 // SSEConsumer consumes Server-Sent Events from OpenCode
@@ -55,10 +57,10 @@ func NewSSEConsumerWithTransport(config Config, transport *http.Transport) *SSEC
 	}
 
 	return &SSEConsumer{
-		config:    config,
+		config:     config,
 		httpClient: httpClient,
-		eventChan: make(chan Event, 100),
-		closeChan: make(chan struct{}),
+		eventChan:  make(chan Event, 100),
+		closeChan:  make(chan struct{}),
 	}
 }
 
@@ -140,6 +142,7 @@ func (s *SSEConsumer) connect() error {
 
 	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, url, nil)
 	if err != nil {
+		metrics.SSEConnectionErrors.WithLabelValues("request_creation").Inc()
 		return fmt.Errorf("create SSE request: %w", err)
 	}
 
@@ -148,16 +151,23 @@ func (s *SSEConsumer) connect() error {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		metrics.SSEConnectionErrors.WithLabelValues("connection").Inc()
+		metrics.ActiveSSEConnections.Set(0)
 		return fmt.Errorf("connect to SSE: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		metrics.SSEConnectionErrors.WithLabelValues("http_status").Inc()
+		metrics.ActiveSSEConnections.Set(0)
 		return fmt.Errorf("SSE connection failed with status: %d", resp.StatusCode)
 	}
 
-	// Read and parse events
-	return s.readEvents(resp.Body)
+	metrics.ActiveSSEConnections.Set(1)
+
+	err = s.readEvents(resp.Body)
+	metrics.ActiveSSEConnections.Set(0)
+	return err
 }
 
 // readEvents reads and parses SSE events from the connection
@@ -172,12 +182,26 @@ func (s *SSEConsumer) readEvents(r io.Reader) error {
 
 		// Empty line indicates end of event
 		if line == "" {
-			if eventType != "" && len(dataLines) > 0 {
+			if len(dataLines) > 0 {
 				// Parse and send event
 				data := strings.Join(dataLines, "\n")
-				if err := s.parseAndSendEvent(eventType, data); err != nil {
-					// Log error but continue processing
-					fmt.Printf("Error parsing event: %v\n", err)
+
+				// OpenCode sends events as: data: {"type":"...", "properties":{...}}
+				// Try to extract type from JSON if not set via event: field
+				if eventType == "" {
+					var envelope struct {
+						Type string `json:"type"`
+					}
+					if err := json.Unmarshal([]byte(data), &envelope); err == nil && envelope.Type != "" {
+						eventType = envelope.Type
+					}
+				}
+
+				if eventType != "" {
+					if err := s.parseAndSendEvent(eventType, data); err != nil {
+						// Log error but continue processing
+						fmt.Printf("Error parsing event: %v\n", err)
+					}
 				}
 			}
 			// Reset for next event
@@ -212,63 +236,63 @@ func (s *SSEConsumer) parseAndSendEvent(eventType, data string) error {
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal question.asked: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	case "question.replied":
 		var evt EventQuestionReplied
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal question.replied: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	case "question.rejected":
 		var evt EventQuestionRejected
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal question.rejected: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	case "permission.asked":
 		var evt EventPermissionAsked
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal permission.asked: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	case "permission.replied":
 		var evt EventPermissionReplied
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal permission.replied: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	case "message.updated":
 		var evt EventMessageUpdated
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal message.updated: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	case "message.part.updated":
 		var evt EventMessagePartUpdated
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal message.part.updated: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	case "session.idle":
 		var evt EventSessionIdle
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal session.idle: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	case "session.error":
 		var evt EventSessionError
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			return fmt.Errorf("unmarshal session.error: %w", err)
 		}
-		event.Properties = &evt.Properties
+		event.Properties = &evt
 
 	default:
 		// Generic event, parse as map

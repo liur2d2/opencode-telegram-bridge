@@ -76,6 +76,7 @@ type Session struct {
 	ProjectID string  `json:"projectID"`
 	Directory string  `json:"directory"`
 	ParentID  *string `json:"parentID,omitempty"`
+	Slug      string  `json:"slug"`
 	Title     string  `json:"title"`
 	Version   string  `json:"version"`
 	Time      struct {
@@ -182,7 +183,21 @@ type EventPermissionReplied struct {
 type EventMessageUpdated struct {
 	Type       string `json:"type"`
 	Properties struct {
-		Message interface{} `json:"message"`
+		Info *struct {
+			ID        string `json:"id"`
+			SessionID string `json:"sessionID"`
+			Role      string `json:"role"`
+			ParentID  string `json:"parentID,omitempty"`
+			Time      struct {
+				Created   int64  `json:"created"`
+				Completed *int64 `json:"completed,omitempty"`
+			} `json:"time"`
+			ModelID    string `json:"modelID,omitempty"`
+			ProviderID string `json:"providerID,omitempty"`
+			Mode       string `json:"mode,omitempty"`
+			Agent      string `json:"agent,omitempty"`
+		} `json:"info,omitempty"`
+		Parts []interface{} `json:"parts,omitempty"`
 	} `json:"properties"`
 }
 

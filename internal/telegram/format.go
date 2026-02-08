@@ -58,10 +58,26 @@ func FormatHTML(text string) string {
 		return key
 	})
 
-	// Step 3: Escape remaining HTML entities in non-code text
+	// Step 3: Extract and protect markdown tables
+	tableRegex := regexp.MustCompile(`(?m)^(\|.+\|)\n(\|[\s\-:]+\|)\n((?:\|.+\|\n?)+)`)
+	protectedTables := make(map[string]string)
+
+	result = tableRegex.ReplaceAllStringFunc(result, func(match string) string {
+		// Convert table to preformatted text (Telegram doesn't support tables)
+		// Escape HTML in table content
+		escapedTable := html.EscapeString(match)
+		htmlTable := "<pre>" + escapedTable + "</pre>"
+
+		key := "\x00TABLE" + string(rune(placeholder)) + "\x00"
+		protectedTables[key] = htmlTable
+		placeholder++
+		return key
+	})
+
+	// Step 4: Escape remaining HTML entities in non-code text
 	result = html.EscapeString(result)
 
-	// Step 4: Convert markdown patterns to HTML (in order of precedence)
+	// Step 5: Convert markdown patterns to HTML (in order of precedence)
 
 	// Bold: **text** or __text__
 	boldRegex := regexp.MustCompile(`\*\*([^\*]+)\*\*|__([^_]+)__`)
@@ -112,7 +128,10 @@ func FormatHTML(text string) string {
 	listRegex := regexp.MustCompile(`(?m)^[\-\*]\s+(.+)$`)
 	result = listRegex.ReplaceAllString(result, "• $1")
 
-	// Step 5: Restore protected code sections
+	// Step 6: Restore protected sections (order matters: tables first, then code)
+	for key, value := range protectedTables {
+		result = strings.ReplaceAll(result, key, value)
+	}
 	for key, value := range protectedInlineCode {
 		result = strings.ReplaceAll(result, key, value)
 	}
