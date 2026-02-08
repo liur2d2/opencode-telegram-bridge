@@ -121,22 +121,26 @@ go build -o opencode-telegram ./cmd
 
 啟動後，透過 Telegram 控制 OpenCode：
 
-### Session 管理
-- `/newsession [title]` — 建立新 session
-- `/sessions` — 列出所有 session
-- `/session {id}` — 切換到指定 session
-- `/abort` — 終止目前 session
-- `/status` — 顯示目前 session + 伺服器健康狀態
-
-### Agent 切換
-- `/switch [agent]` — 切換 OHO agent（或顯示可用的 agent）
-
 ### 指令
-- `/help` — 顯示所有可用指令
 
-### 互動式提示
+- `/help` — 顯示所有可用指令
+- `/status` — 顯示目前 session、agent、模型、目錄與 OpenCode 健康狀態
+
+### Session 管理
+- `/new [title]` — 建立新 session
+- `/sessions` — 列出主要 sessions（表格檢視，最多 15 個）
+- `/selectsession` — 互動式 session 選擇器（含分頁）
+- `/abort` — 中止目前請求
+
+### Agent 與 Model 選擇
+- `/route [agent]` — 設定 agent 路由（或透過互動式選單顯示目前 agent）
+- `/model` — 選擇 AI 模型（互動式選單，含分頁）
+
+### 互動式功能
 - 問題以 Inline Keyboard 顯示 → 點擊回答
-- 權限以 Inline Keyboard 顯示 → 點擊 Allow/Reject
+- 權限以 Inline Keyboard 顯示 → 點擊 Allow/Reject/Always Allow
+- 訊息上的 Reaction（👍👎）會轉發給 AI
+- Sticker 會被描述後傳送給 AI
 
 ## 架構
 

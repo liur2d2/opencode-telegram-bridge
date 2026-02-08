@@ -121,22 +121,26 @@ go build -o opencode-telegram ./cmd
 
 Once running, control OpenCode via Telegram:
 
-### Session Management
-- `/newsession [title]` — Create new session
-- `/sessions` — List all sessions
-- `/session {id}` — Switch to specific session
-- `/abort` — Abort current session
-- `/status` — Show current session + server health
-
-### Agent Switching
-- `/switch [agent]` — Switch OHO agent (or show available agents)
-
 ### Commands
+
 - `/help` — Show all available commands
+- `/status` — Show current session, agent, model, directory, and OpenCode health
+
+### Session Management
+- `/new [title]` — Create new session
+- `/sessions` — List primary sessions (table view, up to 15)
+- `/selectsession` — Interactive session selector with pagination
+- `/abort` — Abort current request
+
+### Agent & Model Selection
+- `/route [agent]` — Set agent routing (or show current agent with interactive menu)
+- `/model` — Select AI model (interactive menu with pagination)
 
 ### Interactive Prompts
 - Questions appear as Inline Keyboards → tap to answer
-- Permissions appear as Inline Keyboards → tap Allow/Reject
+- Permissions appear as Inline Keyboards → tap Allow/Reject/Always Allow
+- Reactions (👍👎) on messages are forwarded to AI
+- Stickers are described and sent to AI
 
 ## Architecture
 
