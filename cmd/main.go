@@ -2,17 +2,23 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/user/opencode-telegram/internal/bridge"
 	"github.com/user/opencode-telegram/internal/config"
+	"github.com/user/opencode-telegram/internal/health"
+	"github.com/user/opencode-telegram/internal/metrics"
 	"github.com/user/opencode-telegram/internal/opencode"
 	"github.com/user/opencode-telegram/internal/state"
 	"github.com/user/opencode-telegram/internal/telegram"
@@ -113,13 +119,45 @@ func main() {
 	defer cancel()
 
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+
+	// Create health monitor
+	healthMonitor := health.NewHealthMonitor()
+
+	// Start health endpoint
+	healthPort := getenv("HEALTH_PORT", "8080")
+	healthMux := http.NewServeMux()
+	healthMux.Handle("/health", healthMonitor)
+	healthMux.Handle("/metrics", promhttp.Handler())
+	healthServer := &http.Server{
+		Addr:    ":" + healthPort,
+		Handler: healthMux,
+	}
+	go func() {
+		log.Printf("Health endpoint listening on :%s/health", healthPort)
+		log.Printf("Metrics endpoint listening on :%s/metrics", healthPort)
+		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Health server error: %v", err)
+		}
+	}()
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		healthServer.Shutdown(shutdownCtx)
+	}()
+
+	// Initialize Prometheus metrics
+	_ = metrics.SSEEventProcessingLatency
+	_ = metrics.TelegramMessageSendLatency
+	_ = metrics.ActiveSSEConnections
+	_ = metrics.SSEConnectionErrors
 
 	// Connect SSE consumer (shared)
 	if err := sseConsumer.Connect(ctx); err != nil {
 		log.Fatalf("Failed to connect SSE consumer: %v", err)
 	}
 	defer sseConsumer.Close()
+	healthMonitor.SetSSEConnected(true)
 
 	// Create and start bot instances (one per account)
 	var wg sync.WaitGroup
@@ -127,14 +165,28 @@ func main() {
 		wg.Add(1)
 		go func(idx int, acc config.AccountConfig) {
 			defer wg.Done()
-			runBotInstance(ctx, idx, acc, ocClient, sseConsumer, debounceDuration, offsetFile, webhookURL, webhookPort, webhookSecret)
+			runBotInstance(ctx, idx, acc, ocClient, sseConsumer, healthMonitor, debounceDuration, offsetFile, webhookURL, webhookPort, webhookSecret)
 		}(i, account)
 	}
 
-	// Wait for shutdown signal
-	sig := <-sigChan
-	log.Printf("Received signal: %v", sig)
-	log.Println("Shutting down gracefully...")
+	// Wait for shutdown signal or reload
+	for {
+		sig := <-sigChan
+		log.Printf("Received signal: %v", sig)
+
+		if sig == syscall.SIGHUP {
+			log.Println("Reloading configuration...")
+			if err := reloadConfig(&ocDirectory); err != nil {
+				log.Printf("Config reload failed: %v", err)
+			} else {
+				log.Println("Configuration reloaded successfully")
+			}
+			continue
+		}
+
+		log.Println("Shutting down gracefully...")
+		break
+	}
 
 	cancel()
 
@@ -163,6 +215,7 @@ func runBotInstance(
 	account config.AccountConfig,
 	ocClient *opencode.Client,
 	sseConsumer *opencode.SSEConsumer,
+	healthMonitor *health.HealthMonitor,
 	debounceDuration time.Duration,
 	offsetFile string,
 	webhookURL, webhookPort, webhookSecret string,
@@ -185,12 +238,18 @@ func runBotInstance(
 	tgBot := telegram.NewBot(account.Token, account.ChatID, currentOffset)
 	tgBot.SetOffset(offsetFile)
 
+	// Set bot commands for auto-completion
+	if err := tgBot.SetMyCommands(ctx); err != nil {
+		log.Printf("[%s] Warning: failed to set commands: %v", accountName, err)
+	}
+
 	// Create state instance (one per account)
 	appState := state.NewAppState()
 	registry := state.NewIDRegistry()
 
 	// Create bridge instance (one per account)
 	bridgeInstance := bridge.NewBridge(ocClient, tgBot, appState, registry, debounceDuration)
+	bridgeInstance.SetHealthMonitor(healthMonitor)
 
 	// Start bridge
 	bridgeInstance.Start(ctx, sseConsumer)
@@ -220,4 +279,37 @@ func getenv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func reloadConfig(currentDirectory *string) error {
+	credFile := os.ExpandEnv("$HOME/.opencode-telegram-credentials")
+	data, err := os.ReadFile(credFile)
+	if err != nil {
+		return fmt.Errorf("read credentials: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.Trim(strings.TrimSpace(parts[1]), "\"'")
+
+		if key == "OPENCODE_DIRECTORY" && value != "" {
+			if *currentDirectory != value {
+				log.Printf("Updated OPENCODE_DIRECTORY: %s -> %s", *currentDirectory, value)
+				*currentDirectory = value
+			}
+		}
+	}
+
+	return nil
 }

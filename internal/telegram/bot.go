@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+
+	"github.com/user/opencode-telegram/internal/metrics"
 )
 
 // Bot wraps the Telegram bot client
@@ -77,10 +80,12 @@ func (b *Bot) trackUpdateID(update *models.Update) {
 	}
 }
 
-// SendMessage sends a message to the configured chat
-// Returns the message ID for later editing
-// NOTE: Does NOT automatically split - caller must handle long messages
 func (b *Bot) SendMessage(ctx context.Context, text string) (int, error) {
+	start := time.Now()
+	defer func() {
+		metrics.ObserveTelegramMessageSend(start)
+	}()
+
 	msg, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    b.chatID,
 		Text:      text,
@@ -88,6 +93,23 @@ func (b *Bot) SendMessage(ctx context.Context, text string) (int, error) {
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to send message: %w", err)
+	}
+
+	return msg.ID, nil
+}
+
+func (b *Bot) SendMessagePlain(ctx context.Context, text string) (int, error) {
+	start := time.Now()
+	defer func() {
+		metrics.ObserveTelegramMessageSend(start)
+	}()
+
+	msg, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: b.chatID,
+		Text:   text,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to send plain message: %w", err)
 	}
 
 	return msg.ID, nil
@@ -107,7 +129,6 @@ func (b *Bot) SendMessageWithKeyboard(ctx context.Context, text string, keyboard
 	return msg.ID, nil
 }
 
-// EditMessage edits an existing message
 func (b *Bot) EditMessage(ctx context.Context, messageID int, text string) error {
 	_, err := b.bot.EditMessageText(ctx, &bot.EditMessageTextParams{
 		ChatID:    b.chatID,
@@ -117,6 +138,19 @@ func (b *Bot) EditMessage(ctx context.Context, messageID int, text string) error
 	})
 	if err != nil {
 		return fmt.Errorf("failed to edit message: %w", err)
+	}
+
+	return nil
+}
+
+func (b *Bot) EditMessagePlain(ctx context.Context, messageID int, text string) error {
+	_, err := b.bot.EditMessageText(ctx, &bot.EditMessageTextParams{
+		ChatID:    b.chatID,
+		MessageID: messageID,
+		Text:      text,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to edit plain message: %w", err)
 	}
 
 	return nil
@@ -143,6 +177,29 @@ func (b *Bot) AnswerCallback(ctx context.Context, callbackID string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to answer callback: %w", err)
+	}
+
+	return nil
+}
+
+// SetMyCommands sets the bot's command list for auto-completion
+func (b *Bot) SetMyCommands(ctx context.Context) error {
+	commands := []models.BotCommand{
+		{Command: "help", Description: "顯示所有可用指令"},
+		{Command: "sessions", Description: "列出 sessions（表格檢視）"},
+		{Command: "selectsession", Description: "選擇 session（互動選單）"},
+		{Command: "status", Description: "顯示目前狀態"},
+		{Command: "model", Description: "選擇 AI 模型"},
+		{Command: "route", Description: "設定 agent 路由"},
+		{Command: "new", Description: "建立新 session"},
+		{Command: "abort", Description: "中止目前請求"},
+	}
+
+	_, err := b.bot.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+		Commands: commands,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to set commands: %w", err)
 	}
 
 	return nil
