@@ -38,6 +38,7 @@ type OpenCodeClient interface {
 	Health() (map[string]interface{}, error)
 	GetConfig() (map[string]interface{}, error)
 	GetMessages(sessionID string, limit int) ([]opencode.Message, error)
+	GetMessage(sessionID string, messageID string) (*opencode.Message, error)
 	ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error
 	ReplyQuestion(requestID string, answers []opencode.QuestionAnswer) error
 }
@@ -364,43 +365,42 @@ func (b *Bridge) handleMessageUpdated(event opencode.Event) {
 	var sessionID string
 	if msgEvent.Properties.Info != nil {
 		sessionID = msgEvent.Properties.Info.SessionID
+		messageID := msgEvent.Properties.Info.ID
 
 		if msgEvent.Properties.Info.Time.Completed != nil {
 			b.state.SetSessionStatus(sessionID, state.SessionIdle)
-			log.Printf("[INFO] handleMessageUpdated: message complete for session %s", sessionID)
-			go b.fetchAndSendCompletedMessage(sessionID)
+			log.Printf("[INFO] handleMessageUpdated: message complete for session %s, messageID=%s", sessionID, messageID)
+			go b.fetchAndSendCompletedMessage(sessionID, messageID)
 		}
 	}
 }
 
-func (b *Bridge) fetchAndSendCompletedMessage(sessionID string) {
-	messages, err := b.ocClient.GetMessages(sessionID, 10)
+func (b *Bridge) fetchAndSendCompletedMessage(sessionID string, targetMessageID string) {
+	msg, err := b.ocClient.GetMessage(sessionID, targetMessageID)
 	if err != nil {
-		log.Printf("[ERROR] fetchAndSendCompletedMessage: failed to get messages for session %s: %v", sessionID, err)
+		log.Printf("[ERROR] fetchAndSendCompletedMessage: failed to get message %s: %v", targetMessageID, err)
 		return
 	}
 
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
-		if msg.Info.Role == "assistant" {
-			var textParts []string
-			for _, part := range msg.Parts {
-				if part.Type == "text" && part.Text != "" {
-					textParts = append(textParts, part.Text)
-				}
-			}
+	if msg.Info.Role != "assistant" {
+		log.Printf("[WARN] fetchAndSendCompletedMessage: message %s is not assistant message (role=%s)", targetMessageID, msg.Info.Role)
+		return
+	}
 
-			if len(textParts) > 0 {
-				content := strings.Join(textParts, "\n")
-				messageID := msg.Info.ID
-				log.Printf("[INFO] fetchAndSendCompletedMessage: sending response for session %s, messageID=%s, content length=%d", sessionID, messageID, len(content))
-				b.sendCompletedMessageFromWebhook(sessionID, messageID, content)
-				return
-			}
+	var textParts []string
+	for _, part := range msg.Parts {
+		if part.Type == "text" && part.Text != "" {
+			textParts = append(textParts, part.Text)
 		}
 	}
 
-	log.Printf("[WARN] fetchAndSendCompletedMessage: no assistant message found for session %s", sessionID)
+	if len(textParts) > 0 {
+		content := strings.Join(textParts, "\n")
+		log.Printf("[INFO] fetchAndSendCompletedMessage: sending response for session %s, messageID=%s, content length=%d", sessionID, targetMessageID, len(content))
+		b.sendCompletedMessageFromWebhook(sessionID, targetMessageID, content)
+	} else {
+		log.Printf("[WARN] fetchAndSendCompletedMessage: message %s has no text content", targetMessageID)
+	}
 }
 
 func (b *Bridge) sendCompletedMessageFromWebhook(sessionID string, messageID string, content string) {

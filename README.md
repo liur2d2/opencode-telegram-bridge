@@ -259,9 +259,12 @@ Once running, control OpenCode via Telegram:
 
 **Deduplication** (`internal/bridge/bridge.go`):
 - MessageID-based deduplication prevents duplicate Telegram responses
-- Unified cache for `message.updated` and `session.idle` events
-- 60-second TTL per unique message
+- **Precise Message Lookup**: Uses `GetMessage(sessionID, messageID)` API to fetch the exact completed message
+- **Event-Driven MessageID Extraction**: `handleMessageUpdated` extracts messageID directly from the event
+- Unified cache for `message.updated` and `session.idle` events using `msg:{messageID}` key format
+- 60-second TTL per unique message with auto-cleanup
 - Atomic `LoadOrStore` operations for goroutine safety
+- Automatic filtering: skips user messages (role != "assistant") and empty content
 
 ### Event Flow
 
@@ -298,9 +301,11 @@ Telegram Bot sends response
 - Workaround: Send any message from TUI to trigger UI refresh
 
 **Duplicate messages in Telegram:**
-- Fixed via messageID-based deduplication (v1.0+)
+- Fixed via messageID-based precise lookup (v1.0+)
+- Root cause: Previous versions queried latest messages, which could return old messages when new requests arrived
+- Solution: Extract messageID from `message.updated` event → query specific message via `/session/{id}/message/{messageID}` → deduplicate with `msg:{messageID}` cache key
 - Each OpenCode response is sent exactly once to Telegram
-- Deduplication cache: 60 seconds per unique message
+- Deduplication cache: 60 seconds TTL with automatic cleanup
 
 **Session lost after restart:**
 - Ensure `TELEGRAM_STATE_FILE` environment variable is set in launchd plist

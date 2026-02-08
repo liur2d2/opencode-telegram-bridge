@@ -309,9 +309,12 @@ curl http://localhost:8080/metrics
 
 **去重機制** (`internal/bridge/bridge.go`):
 - 基於 MessageID 的去重機制，防止 Telegram 收到重複回應
-- `message.updated` 與 `session.idle` 事件共用去重快取
-- 每個唯一訊息 60 秒 TTL
+- **精準訊息查詢**: 使用 `GetMessage(sessionID, messageID)` API 取得特定完成訊息
+- **事件驅動的 MessageID 提取**: `handleMessageUpdated` 直接從事件中提取 messageID
+- `message.updated` 與 `session.idle` 事件共用去重快取，使用 `msg:{messageID}` key 格式
+- 每個唯一訊息 60 秒 TTL，自動清理
 - 原子性 `LoadOrStore` 操作確保 goroutine 安全
+- 自動過濾: 跳過 user 訊息（role != "assistant"）與空內容
 
 ### 事件流程
 
@@ -348,9 +351,11 @@ Telegram Bot 傳送回應
 - 解決方法: 在 TUI 發送任何訊息以觸發 UI 重新整理
 
 **Telegram 收到重複訊息:**
-- 已透過基於 messageID 的去重機制修正（v1.0+）
+- 已透過基於 messageID 的精準查詢修正（v1.0+）
+- 根本原因: 舊版本查詢最新訊息，在新請求到達時可能返回舊訊息
+- 解決方案: 從 `message.updated` 事件提取 messageID → 透過 `/session/{id}/message/{messageID}` 查詢特定訊息 → 使用 `msg:{messageID}` cache key 去重
 - 每條 OpenCode 回應只會傳送到 Telegram 一次
-- 去重快取: 每個唯一訊息 60 秒
+- 去重快取: 60 秒 TTL，自動清理
 
 **重啟後 session 遺失:**
 - 確保 launchd plist 中已設定 `TELEGRAM_STATE_FILE` 環境變數

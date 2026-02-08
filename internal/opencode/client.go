@@ -488,3 +488,30 @@ func (c *Client) GetMessages(sessionID string, limit int) ([]Message, error) {
 
 	return messages, nil
 }
+
+func (c *Client) GetMessage(sessionID string, messageID string) (*Message, error) {
+	url := fmt.Sprintf("%s/session/%s/message/%s", c.config.BaseURL, sessionID, messageID)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create get message request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get message: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get message failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var message Message
+	if err := json.NewDecoder(resp.Body).Decode(&message); err != nil {
+		return nil, fmt.Errorf("decode message: %w", err)
+	}
+
+	return &message, nil
+}
