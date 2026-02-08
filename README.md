@@ -4,6 +4,15 @@
 
 Telegram ↔ OpenCode bidirectional bridge service. Control OpenCode entirely via Telegram with session management, agent switching, and interactive question/permission prompts.
 
+## Features
+
+- ✅ **Bidirectional Sync**: Send messages from Telegram → OpenCode TUI and receive responses in Telegram
+- ✅ **Deduplication**: Intelligent message deduplication prevents duplicate responses in Telegram
+- ✅ **Session Persistence**: Selected session persists across service restarts
+- ✅ **Interactive Commands**: Full session management, agent switching, and model selection
+- ✅ **Background Service**: Runs as macOS launchd daemon, auto-starts on login
+- ✅ **Real-time Updates**: OpenCode responses appear in Telegram via webhook events
+
 ## Architecture
 
 This project uses a **hybrid plugin + service architecture**:
@@ -121,6 +130,8 @@ The launchd service (`~/Library/LaunchAgents/com.opencode.telegram.bridge.plist`
 - `USE_PLUGIN_MODE`: Enable plugin mode (default: `true`)
 - `PLUGIN_WEBHOOK_PORT`: Plugin webhook port (default: `8888`)
 - `HEALTH_PORT`: Health/metrics endpoint port (default: `8080`)
+- `TELEGRAM_STATE_FILE`: Session state persistence file (default: `~/.opencode-telegram-state`)
+- `TELEGRAM_OFFSET_FILE`: Telegram update offset file (default: `~/.opencode-telegram-offset`)
 
 ### LaunchAgent Configuration
 
@@ -198,7 +209,10 @@ Once running, control OpenCode via Telegram:
 - `/new [title]` — Create new session
 - `/sessions` — List primary sessions (table view, up to 15)
 - `/selectsession` — Interactive session selector with pagination
+- `/deletesessions` — Delete sessions with interactive selection
 - `/abort` — Abort current request
+
+**Note**: Currently selected session persists across service restarts via `~/.opencode-telegram-state`.
 
 ### Agent & Model Selection
 - `/route [agent]` — Set agent routing (or show current agent with interactive menu)
@@ -238,8 +252,16 @@ Once running, control OpenCode via Telegram:
 
 **State Management** (`internal/state/`):
 - Session/agent state tracking
+- Session state persistence across restarts (`state.go`)
+- Telegram update offset tracking (`offset.go`)
 - Callback ID registry (short IDs for inline keyboards)
 - Goroutine-safe with sync.Map
+
+**Deduplication** (`internal/bridge/bridge.go`):
+- MessageID-based deduplication prevents duplicate Telegram responses
+- Unified cache for `message.updated` and `session.idle` events
+- 60-second TTL per unique message
+- Atomic `LoadOrStore` operations for goroutine safety
 
 ### Event Flow
 
@@ -266,6 +288,24 @@ Telegram Bot sends response
 ```
 
 ## Troubleshooting
+
+### Common Issues
+
+**TUI not showing Telegram messages:**
+- Messages ARE successfully sent to OpenCode API and stored in the session
+- This is a known OpenCode TUI limitation - it doesn't auto-refresh when messages arrive via API
+- Verify messages are in session: `curl http://localhost:54321/session/<session-id>/message?limit=5`
+- Workaround: Send any message from TUI to trigger UI refresh
+
+**Duplicate messages in Telegram:**
+- Fixed via messageID-based deduplication (v1.0+)
+- Each OpenCode response is sent exactly once to Telegram
+- Deduplication cache: 60 seconds per unique message
+
+**Session lost after restart:**
+- Ensure `TELEGRAM_STATE_FILE` environment variable is set in launchd plist
+- Default location: `~/.opencode-telegram-state`
+- Check file exists and contains valid session ID
 
 ### Service Issues
 

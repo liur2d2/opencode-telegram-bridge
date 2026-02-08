@@ -49,9 +49,9 @@ type MessageInfo struct {
 	Role      string  `json:"role"` // "user" or "assistant"
 	Status    *string `json:"status,omitempty"`
 	Time      *struct {
-		Created   *time.Time `json:"created,omitempty"`
-		Started   *time.Time `json:"started,omitempty"`
-		Completed *time.Time `json:"completed,omitempty"`
+		Created   int64  `json:"created,omitempty"`
+		Started   *int64 `json:"started,omitempty"`
+		Completed *int64 `json:"completed,omitempty"`
 	} `json:"time,omitempty"`
 }
 

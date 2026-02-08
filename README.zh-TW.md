@@ -4,6 +4,15 @@
 
 Telegram ↔ OpenCode 雙向橋接服務。透過 Telegram 完全控制 OpenCode，支援 session 管理、agent 切換與互動式問答/權限提示。
 
+## 功能特色
+
+- ✅ **雙向同步**: 從 Telegram 發送訊息 → OpenCode TUI，並在 Telegram 接收回應
+- ✅ **去重機制**: 智慧訊息去重，防止 Telegram 收到重複回應
+- ✅ **Session 持久化**: 選定的 session 在服務重啟後保留
+- ✅ **互動式命令**: 完整的 session 管理、agent 切換、模型選擇
+- ✅ **背景服務**: 作為 macOS launchd daemon 執行，登入時自動啟動
+- ✅ **即時更新**: OpenCode 回應透過 webhook 事件即時顯示在 Telegram
+
 ## 架構
 
 本專案採用 **混合 plugin + service 架構**：
@@ -167,10 +176,12 @@ launchd service (`~/Library/LaunchAgents/com.opencode.telegram.bridge.plist`) �
 
 **選填:**
 - `OPENCODE_BASE_URL`: OpenCode 伺服器 URL（預設：`http://localhost:54321`）
-- `OPENCODE_DIRECTORY`: OpenCode 設定檔目錄（預設：`~/.config/opencode`）
+- `OPENCODE_DIRECTORY`: OpenCode 設定目錄（預設：`~/.config/opencode`）
 - `USE_PLUGIN_MODE`: 啟用 plugin 模式（預設：`true`）
 - `PLUGIN_WEBHOOK_PORT`: Plugin webhook port（預設：`8888`）
 - `HEALTH_PORT`: Health/metrics endpoint port（預設：`8080`）
+- `TELEGRAM_STATE_FILE`: Session 狀態持久化檔案（預設：`~/.opencode-telegram-state`）
+- `TELEGRAM_OFFSET_FILE`: Telegram update offset 檔案（預設：`~/.opencode-telegram-offset`）
 
 ### LaunchAgent 設定
 
@@ -202,7 +213,10 @@ tail -f ~/.local/var/log/opencode-telegram-error.log
 - `/new [title]` — 建立新 session
 - `/sessions` — 列出主要 sessions（表格檢視，最多 15 個）
 - `/selectsession` — 互動式 session 選擇器（含分頁）
+- `/deletesessions` — 刪除 sessions（互動式選擇）
 - `/abort` — 中止目前請求
+
+**注意**: 目前選定的 session 會透過 `~/.opencode-telegram-state` 在服務重啟後保留。
 
 ### Agent 與 Model 選擇
 - `/route [agent]` — 設定 agent 路由（或透過互動式選單顯示目前 agent）
@@ -288,8 +302,16 @@ curl http://localhost:8080/metrics
 
 **State Management** (`internal/state/`):
 - Session/agent 狀態追蹤
+- Session 狀態持久化（跨重啟保留，`state.go`）
+- Telegram update offset 追蹤（`offset.go`）
 - Callback ID registry（inline keyboards 的短 ID）
 - Goroutine-safe with sync.Map
+
+**去重機制** (`internal/bridge/bridge.go`):
+- 基於 MessageID 的去重機制，防止 Telegram 收到重複回應
+- `message.updated` 與 `session.idle` 事件共用去重快取
+- 每個唯一訊息 60 秒 TTL
+- 原子性 `LoadOrStore` 操作確保 goroutine 安全
 
 ### 事件流程
 
@@ -316,6 +338,24 @@ Telegram Bot 傳送回應
 ```
 
 ## 疑難排解
+
+### 常見問題
+
+**TUI 未顯示 Telegram 訊息:**
+- 訊息已成功傳送到 OpenCode API 並儲存在 session 中
+- 這是 OpenCode TUI 的已知限制 - 透過 API 收到訊息時不會自動重新整理
+- 驗證訊息在 session 中: `curl http://localhost:54321/session/<session-id>/message?limit=5`
+- 解決方法: 在 TUI 發送任何訊息以觸發 UI 重新整理
+
+**Telegram 收到重複訊息:**
+- 已透過基於 messageID 的去重機制修正（v1.0+）
+- 每條 OpenCode 回應只會傳送到 Telegram 一次
+- 去重快取: 每個唯一訊息 60 秒
+
+**重啟後 session 遺失:**
+- 確保 launchd plist 中已設定 `TELEGRAM_STATE_FILE` 環境變數
+- 預設位置: `~/.opencode-telegram-state`
+- 檢查檔案存在且包含有效的 session ID
 
 ### 服務問題
 

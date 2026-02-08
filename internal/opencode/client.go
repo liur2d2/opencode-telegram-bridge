@@ -463,7 +463,7 @@ func (c *Client) GetConfig() (map[string]interface{}, error) {
 }
 
 func (c *Client) GetMessages(sessionID string, limit int) ([]Message, error) {
-	url := fmt.Sprintf("%s/session/%s/messages?limit=%d", c.config.BaseURL, sessionID, limit)
+	url := fmt.Sprintf("%s/session/%s/message?limit=%d", c.config.BaseURL, sessionID, limit)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

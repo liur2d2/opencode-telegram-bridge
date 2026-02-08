@@ -163,13 +163,7 @@ func (b *Bridge) HandleUserMessage(ctx context.Context, text string) error {
 		return nil
 	}
 
-	// Check if session is busy
-	if b.state.GetSessionStatus(sessionID) == state.SessionBusy {
-		_, err := b.tgBot.SendMessage(ctx, "⏳ Still processing your previous request...")
-		return err
-	}
-
-	// Session is idle - create first buffer and start debouncing
+	// Create first buffer and start debouncing
 	buf := &DebounceBuffer{
 		messages:     []string{text},
 		lastReceived: time.Now(),
@@ -200,11 +194,6 @@ func (b *Bridge) flushDebounceBuffer(sessionID string) {
 
 	// Merge messages with newline separator
 	mergedText := strings.Join(messages, "\n")
-
-	// Check session status before sending
-	if b.state.GetSessionStatus(sessionID) == state.SessionBusy {
-		return
-	}
 
 	b.state.SetSessionStatus(sessionID, state.SessionBusy)
 
@@ -327,21 +316,23 @@ func (b *Bridge) handleSessionIdle(event opencode.Event) {
 
 	if evtData.Properties.Content != nil && *evtData.Properties.Content != "" {
 		content := *evtData.Properties.Content
-
-		// Deduplication: check if we already processed this session recently
-		cacheKey := fmt.Sprintf("idle:%s", sessionID)
-		if _, exists := b.idleProcessed.LoadOrStore(cacheKey, time.Now()); exists {
-			log.Printf("[INFO] handleSessionIdle: skipping duplicate idle event for session %s", sessionID)
-			return
-		}
-
-		// Clear cache after 5 seconds
-		time.AfterFunc(5*time.Second, func() {
-			b.idleProcessed.Delete(cacheKey)
-		})
-
 		log.Printf("[INFO] handleSessionIdle: sending response for session %s, content length=%d", sessionID, len(content))
-		go b.sendCompletedMessageFromWebhook(sessionID, content)
+
+		// Fetch latest message to get messageID for unified deduplication
+		go func() {
+			messages, err := b.ocClient.GetMessages(sessionID, 1)
+			if err != nil {
+				log.Printf("[ERROR] handleSessionIdle: failed to get messageID: %v", err)
+				return
+			}
+
+			if len(messages) > 0 && messages[0].Info.Role == "assistant" {
+				messageID := messages[0].Info.ID
+				b.sendCompletedMessageFromWebhook(sessionID, messageID, content)
+			} else {
+				log.Printf("[WARN] handleSessionIdle: no assistant message found for session %s", sessionID)
+			}
+		}()
 	}
 }
 
@@ -377,17 +368,6 @@ func (b *Bridge) handleMessageUpdated(event opencode.Event) {
 		if msgEvent.Properties.Info.Time.Completed != nil {
 			b.state.SetSessionStatus(sessionID, state.SessionIdle)
 			log.Printf("[INFO] handleMessageUpdated: message complete for session %s", sessionID)
-
-			cacheKey := fmt.Sprintf("msg:%s:%s", sessionID, msgEvent.Properties.Info.ID)
-			if _, exists := b.idleProcessed.LoadOrStore(cacheKey, time.Now()); exists {
-				log.Printf("[INFO] handleMessageUpdated: skipping duplicate message for session %s", sessionID)
-				return
-			}
-
-			time.AfterFunc(5*time.Second, func() {
-				b.idleProcessed.Delete(cacheKey)
-			})
-
 			go b.fetchAndSendCompletedMessage(sessionID)
 		}
 	}
@@ -412,8 +392,9 @@ func (b *Bridge) fetchAndSendCompletedMessage(sessionID string) {
 
 			if len(textParts) > 0 {
 				content := strings.Join(textParts, "\n")
-				log.Printf("[INFO] fetchAndSendCompletedMessage: sending response for session %s, content length=%d", sessionID, len(content))
-				b.sendCompletedMessageFromWebhook(sessionID, content)
+				messageID := msg.Info.ID
+				log.Printf("[INFO] fetchAndSendCompletedMessage: sending response for session %s, messageID=%s, content length=%d", sessionID, messageID, len(content))
+				b.sendCompletedMessageFromWebhook(sessionID, messageID, content)
 				return
 			}
 		}
@@ -422,18 +403,37 @@ func (b *Bridge) fetchAndSendCompletedMessage(sessionID string) {
 	log.Printf("[WARN] fetchAndSendCompletedMessage: no assistant message found for session %s", sessionID)
 }
 
-func (b *Bridge) sendCompletedMessageFromWebhook(sessionID string, content string) {
+func (b *Bridge) sendCompletedMessageFromWebhook(sessionID string, messageID string, content string) {
+	// Deduplication check - use messageID for precise dedup
+	cacheKey := fmt.Sprintf("msg:%s", messageID)
+	if _, exists := b.idleProcessed.LoadOrStore(cacheKey, time.Now()); exists {
+		log.Printf("[INFO] sendCompletedMessageFromWebhook: skipping duplicate message %s", messageID)
+		return
+	}
+
+	// Auto-cleanup after 60 seconds (long enough for any response)
+	time.AfterFunc(60*time.Second, func() {
+		b.idleProcessed.Delete(cacheKey)
+	})
+
+	b.sendToTelegram(sessionID, content)
+}
+
+func (b *Bridge) sendToTelegram(sessionID string, content string) {
 	ctx := context.Background()
 
 	thinkingMsgIDInterface, ok := b.thinkingMsgs.Load(sessionID)
 	if !ok {
-		log.Printf("[INFO] sendCompletedMessageFromWebhook: creating new message for session %s", sessionID)
+		log.Printf("[INFO] sendToTelegram: creating new message for session %s", sessionID)
 		formattedText := telegram.FormatHTML(content)
 		chunks := telegram.SplitMessage(formattedText, 4096)
 
-		for _, chunk := range chunks {
-			if _, err := b.tgBot.SendMessage(ctx, chunk); err != nil {
-				log.Printf("[ERROR] sendCompletedMessageFromWebhook: send failed: %v", err)
+		for i, chunk := range chunks {
+			msgID, err := b.tgBot.SendMessage(ctx, chunk)
+			if err != nil {
+				log.Printf("[ERROR] sendToTelegram: send chunk %d failed: %v", i, err)
+			} else {
+				log.Printf("[SUCCESS] sendToTelegram: sent chunk %d, msgID=%d", i, msgID)
 			}
 		}
 		return
@@ -446,18 +446,18 @@ func (b *Bridge) sendCompletedMessageFromWebhook(sessionID string, content strin
 
 	if len(chunks) > 0 {
 		if err := b.tgBot.EditMessage(ctx, thinkingMsgID, chunks[0]); err != nil {
-			log.Printf("[ERROR] sendCompletedMessageFromWebhook: edit failed: %v", err)
+			log.Printf("[ERROR] sendToTelegram: edit failed: %v", err)
 		}
 
 		for i := 1; i < len(chunks); i++ {
 			if _, err := b.tgBot.SendMessage(ctx, chunks[i]); err != nil {
-				log.Printf("[ERROR] sendCompletedMessageFromWebhook: send chunk %d failed: %v", i, err)
+				log.Printf("[ERROR] sendToTelegram: send chunk %d failed: %v", i, err)
 			}
 		}
 	}
 
 	b.thinkingMsgs.Delete(sessionID)
-	log.Printf("[INFO] sendCompletedMessageFromWebhook: sent final message for session %s, content length=%d", sessionID, len(content))
+	log.Printf("[INFO] sendToTelegram: sent final message for session %s, content length=%d", sessionID, len(content))
 }
 
 func (b *Bridge) sendCompletedMessage(sessionID string) {
