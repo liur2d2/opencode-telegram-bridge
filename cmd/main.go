@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -16,37 +17,53 @@ import (
 	"github.com/user/opencode-telegram/internal/telegram"
 )
 
+type BotConfig struct {
+	Token  string `json:"token"`
+	ChatID int64  `json:"chatID"`
+}
+
 func main() {
-	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-	chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")
 	ocBaseURL := getenv("OPENCODE_BASE_URL", "http://localhost:54321")
 	ocDirectory := getenv("OPENCODE_DIRECTORY", ".")
 	debounceStr := getenv("TELEGRAM_DEBOUNCE_MS", "1000")
 	offsetFile := getenv("TELEGRAM_OFFSET_FILE", "~/.opencode-telegram-offset")
-	proxyURL := os.Getenv("TELEGRAM_PROXY") // Optional proxy (empty if not set)
+	proxyURL := os.Getenv("TELEGRAM_PROXY")
+	webhookURL := os.Getenv("TELEGRAM_WEBHOOK_URL")
+	webhookPort := getenv("TELEGRAM_WEBHOOK_PORT", "8443")
+	webhookSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
+	telegramBotsJSON := os.Getenv("TELEGRAM_BOTS")
 
-	// Webhook mode variables
-	webhookURL := os.Getenv("TELEGRAM_WEBHOOK_URL")         // Optional webhook URL
-	webhookPort := getenv("TELEGRAM_WEBHOOK_PORT", "8443")  // Default webhook port
-	webhookSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")   // Optional secret token
+	var botConfigs []BotConfig
 
-	if botToken == "" || chatIDStr == "" {
-		log.Fatal("Missing required environment variables: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID")
+	if telegramBotsJSON != "" {
+		if err := json.Unmarshal([]byte(telegramBotsJSON), &botConfigs); err != nil {
+			log.Fatalf("Invalid TELEGRAM_BOTS JSON: %v", err)
+		}
+		if len(botConfigs) == 0 {
+			log.Fatal("TELEGRAM_BOTS array is empty")
+		}
+		if len(botConfigs) > 10 {
+			log.Fatal("Too many bots (max 10)")
+		}
+	} else {
+		botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+		chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")
+		if botToken == "" || chatIDStr == "" {
+			log.Fatal("Missing required environment variables: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID or TELEGRAM_BOTS")
+		}
+		chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
+		if err != nil {
+			log.Fatalf("Invalid TELEGRAM_CHAT_ID (must be a number): %v", err)
+		}
+		botConfigs = []BotConfig{{Token: botToken, ChatID: chatID}}
 	}
 
-	chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
-	if err != nil {
-		log.Fatalf("Invalid TELEGRAM_CHAT_ID (must be a number): %v", err)
-	}
-
-	// Parse debounce milliseconds with validation
 	debounceMs, err := strconv.ParseInt(debounceStr, 10, 64)
 	if err != nil || debounceMs < 0 || debounceMs > 3000 {
 		debounceMs = 1000
 	}
 	debounceDuration := time.Duration(debounceMs) * time.Millisecond
 
-	// Load saved offset from disk
 	currentOffset, err := state.LoadOffset(offsetFile)
 	if err != nil {
 		log.Printf("Warning: Failed to load offset: %v. Starting from beginning.", err)
@@ -56,21 +73,21 @@ func main() {
 	log.Printf("Starting OpenCode-Telegram Bridge...")
 	log.Printf("OpenCode URL: %s", ocBaseURL)
 	log.Printf("OpenCode Directory: %s", ocDirectory)
-	log.Printf("Telegram Chat ID: %d", chatID)
+	log.Printf("Number of bots: %d", len(botConfigs))
+	for i, cfg := range botConfigs {
+		log.Printf("  Bot %d: Chat ID: %d", i+1, cfg.ChatID)
+	}
 	log.Printf("Debounce Duration: %dms", debounceMs)
 	log.Printf("Offset File: %s (current offset: %d)", offsetFile, currentOffset)
 	if proxyURL != "" {
 		log.Printf("Proxy URL: %s", proxyURL)
 	}
-
-	// Determine mode (webhook or polling)
 	if webhookURL != "" {
 		log.Printf("Webhook Mode: URL=%s, Port=%s", webhookURL, webhookPort)
 	} else {
 		log.Printf("Polling Mode enabled (no TELEGRAM_WEBHOOK_URL set)")
 	}
 
-	// Create shared HTTP transport with proxy support
 	var transport *http.Transport
 	if proxyURL != "" {
 		var err error
@@ -86,7 +103,6 @@ func main() {
 		Directory: ocDirectory,
 	}
 
-	// Create OpenCode client with proxy support
 	var ocClient *opencode.Client
 	if transport != nil {
 		ocClient = opencode.NewClientWithTransport(ocConfig, transport)
@@ -94,7 +110,6 @@ func main() {
 		ocClient = opencode.NewClient(ocConfig)
 	}
 
-	// Create SSE consumer with proxy support
 	var sseConsumer *opencode.SSEConsumer
 	if transport != nil {
 		sseConsumer = opencode.NewSSEConsumerWithTransport(ocConfig, transport)
@@ -102,7 +117,6 @@ func main() {
 		sseConsumer = opencode.NewSSEConsumer(ocConfig)
 	}
 
-	// Create shared HTTP client for media downloads with proxy support
 	var mediaClient *http.Client
 	if transport != nil {
 		mediaClient = &http.Client{
@@ -116,26 +130,6 @@ func main() {
 	}
 	telegram.SetMediaClient(mediaClient)
 
-	// Create Telegram bot (no direct proxy parameter yet; bot library handles internally)
-	tgBot := telegram.NewBot(botToken, chatID, currentOffset)
-	tgBot.SetOffset(offsetFile)
-
-	// If using proxy, optionally inject it into bot's HTTP client
-	if transport != nil {
-		botHTTPClient := &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-		}
-		// Note: go-telegram/bot doesn't expose direct HTTP client injection in constructor
-		// This would require using bot.WithHTTPClient() at creation time if available
-		_ = botHTTPClient // Placeholder for future bot proxy injection
-	}
-
-	appState := state.NewAppState()
-	registry := state.NewIDRegistry()
-
-	bridgeInstance := bridge.NewBridge(ocClient, tgBot, appState, registry, debounceDuration)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -147,33 +141,58 @@ func main() {
 	}
 	defer sseConsumer.Close()
 
+	registry := state.NewIDRegistry()
 	registry.StartCleanup(ctx)
-	bridgeInstance.Start(ctx, sseConsumer)
-	bridgeInstance.RegisterHandlers()
 
-	// Start bot in appropriate mode
-	go func() {
-		if webhookURL != "" {
-			// Webhook mode
-			log.Printf("Starting Telegram bot in webhook mode on port %s...", webhookPort)
-			if err := tgBot.StartWebhook(ctx, webhookURL, webhookPort, webhookSecret); err != nil {
-				log.Printf("Webhook error: %v", err)
+	var bridges []*bridge.Bridge
+	var bots []*telegram.Bot
+
+	for i, cfg := range botConfigs {
+		log.Printf("Initializing bot %d (Chat ID: %d)...", i+1, cfg.ChatID)
+
+		tgBot := telegram.NewBot(cfg.Token, cfg.ChatID, currentOffset)
+		tgBot.SetOffset(offsetFile)
+		bots = append(bots, tgBot)
+
+		appState := state.NewAppState()
+		bridgeInstance := bridge.NewBridge(ocClient, tgBot, appState, registry, debounceDuration)
+		bridges = append(bridges, bridgeInstance)
+
+		bridgeInstance.Start(ctx, sseConsumer)
+		bridgeInstance.RegisterHandlers()
+	}
+
+	for i, tgBot := range bots {
+		i := i
+		tgBot := tgBot
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("Bot %d crashed: %v", i+1, r)
+				}
+			}()
+
+			if webhookURL != "" {
+				log.Printf("Bot %d: Starting in webhook mode on port %s...", i+1, webhookPort)
+				if err := tgBot.StartWebhook(ctx, webhookURL, webhookPort, webhookSecret); err != nil {
+					log.Printf("Bot %d webhook error: %v", i+1, err)
+				}
+			} else {
+				log.Printf("Bot %d: Starting polling...", i+1)
+				tgBot.Start(ctx)
 			}
-		} else {
-			// Polling mode (default)
-			log.Println("Starting Telegram bot polling...")
-			tgBot.Start(ctx)
-		}
-	}()
+		}()
+	}
 
 	sig := <-sigChan
 	log.Printf("Received signal: %v", sig)
 	log.Println("Shutting down gracefully...")
 
-	// Stop webhook if in webhook mode
 	if webhookURL != "" {
-		if err := tgBot.StopWebhook(ctx); err != nil {
-			log.Printf("Warning: Failed to stop webhook: %v", err)
+		for i, tgBot := range bots {
+			if err := tgBot.StopWebhook(ctx); err != nil {
+				log.Printf("Bot %d: Warning: Failed to stop webhook: %v", i+1, err)
+			}
 		}
 	}
 
