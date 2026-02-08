@@ -713,6 +713,30 @@ func (b *Bridge) HandleUnsupportedMedia(ctx context.Context) error {
 	return err
 }
 
+func (b *Bridge) HandleReaction(ctx context.Context, messageID int, userID int64, newReaction []models.ReactionType) error {
+	sessionID := b.state.GetCurrentSession()
+	if sessionID == "" {
+		return nil
+	}
+
+	reactionStr := ""
+	if len(newReaction) > 0 {
+		reaction := newReaction[0]
+		if reaction.ReactionTypeEmoji != nil {
+			reactionStr = reaction.ReactionTypeEmoji.Emoji
+		}
+	}
+
+	if reactionStr == "" {
+		return nil
+	}
+
+	notificationText := fmt.Sprintf("[User reacted with %s to your previous response]", reactionStr)
+	agent := b.state.GetCurrentAgent()
+	_, err := b.ocClient.SendPrompt(sessionID, notificationText, &agent)
+	return err
+}
+
 func (b *Bridge) RegisterHandlers() {
 	b.tgBot.(*telegram.Bot).RegisterTextHandler(func(ctx context.Context, text string) {
 		if b.HandleQuestionCustomInput(ctx, text) {
@@ -809,6 +833,20 @@ func (b *Bridge) RegisterHandlers() {
 	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("agent:", func(ctx context.Context, callbackID string, data string) {
 		agentName := strings.TrimPrefix(data, "agent:")
 		b.state.SetCurrentAgent(agentName)
+		b.tgBot.AnswerCallback(ctx, callbackID)
+	})
+
+	modelHandler := NewModelHandler(b.tgBot, b.state)
+	b.tgBot.(*telegram.Bot).RegisterCommandHandler("model", func(ctx context.Context, args string) {
+		if err := modelHandler.HandleModelCommand(ctx); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
+	})
+
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("mdl:", func(ctx context.Context, callbackID string, data string) {
+		if err := modelHandler.HandleModelCallback(ctx, 0, data); err != nil {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
+		}
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 

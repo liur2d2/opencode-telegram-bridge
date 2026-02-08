@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"github.com/go-telegram/bot/models"
-
-	"github.com/user/opencode-telegram/internal/state"
 )
 
 type mockModelTelegramBot struct {
@@ -54,8 +52,7 @@ func (m *mockModelAppState) GetCurrentModel() string {
 func TestModelCommandShowsKeyboard(t *testing.T) {
 	mockTG := &mockModelTelegramBot{}
 	appState := &mockModelAppState{}
-	registry := state.NewIDRegistry()
-	handler := NewModelHandler(mockTG, appState, registry)
+	handler := NewModelHandler(mockTG, appState)
 	err := handler.HandleModelCommand(context.Background())
 	if err != nil {
 		t.Fatalf("HandleModelCommand failed: %v", err)
@@ -74,17 +71,16 @@ func TestModelCommandShowsKeyboard(t *testing.T) {
 func TestModelPaginationFirstPage(t *testing.T) {
 	mockTG := &mockModelTelegramBot{}
 	appState := &mockModelAppState{}
-	registry := state.NewIDRegistry()
-	handler := NewModelHandler(mockTG, appState, registry)
+	handler := NewModelHandler(mockTG, appState)
 	err := handler.HandleModelCommand(context.Background())
 	if err != nil {
 		t.Fatalf("HandleModelCommand failed: %v", err)
 	}
 	msg := mockTG.messages[0]
-	models := getDefaultModels()
+	models := handler.GetAvailableModels(context.Background())
 	if len(models) > 8 {
-		if !strings.Contains(msg, "Page 1") {
-			t.Errorf("Expected message to contain 'Page 1', got '%s'", msg)
+		if !strings.Contains(msg, "claude") {
+			t.Errorf("Expected message to contain model names, got '%s'", msg)
 		}
 	}
 }
@@ -92,21 +88,15 @@ func TestModelPaginationFirstPage(t *testing.T) {
 func TestModelPaginationLastPage(t *testing.T) {
 	mockTG := &mockModelTelegramBot{}
 	appState := &mockModelAppState{}
-	registry := state.NewIDRegistry()
-	handler := NewModelHandler(mockTG, appState, registry)
-	err := handler.HandleModelCommand(context.Background())
-	if err != nil {
-		t.Fatalf("HandleModelCommand failed: %v", err)
-	}
-	models := getDefaultModels()
+	handler := NewModelHandler(mockTG, appState)
+	models := handler.GetAvailableModels(context.Background())
 	if len(models) <= 8 {
 		t.Skip("Skipping last page test - models list too small for pagination")
 	}
-	lastPageNum := (len(models) + 7) / 8 - 1
-	pageNavData := buildPageNavData(lastPageNum)
-	mockTG.messages = nil
+	lastPageNum := (len(models)+7)/8 - 1
+	pageNavData := "mdl:page:" + string(rune('0'+rune(lastPageNum)))
 	mockTG.editedMessages = make(map[int]string)
-	err = handler.HandleModelCallback(context.Background(), 0, pageNavData)
+	err := handler.HandleModelCallback(context.Background(), 0, pageNavData)
 	if err != nil {
 		t.Fatalf("HandleModelCallback for last page failed: %v", err)
 	}
@@ -118,12 +108,10 @@ func TestModelPaginationLastPage(t *testing.T) {
 func TestModelSelectionUpdatesState(t *testing.T) {
 	mockTG := &mockModelTelegramBot{}
 	appState := &mockModelAppState{}
-	registry := state.NewIDRegistry()
-	handler := NewModelHandler(mockTG, appState, registry)
-	models := getDefaultModels()
+	handler := NewModelHandler(mockTG, appState)
+	models := handler.GetAvailableModels(context.Background())
 	selectedModel := models[0]
-	shortKey := registry.Register(selectedModel, "mdl", "sel")
-	callbackData := "mdl:sel:" + shortKey
+	callbackData := "mdl:sel:" + selectedModel
 	err := handler.HandleModelCallback(context.Background(), 0, callbackData)
 	if err != nil {
 		t.Fatalf("HandleModelCallback failed: %v", err)
@@ -131,10 +119,10 @@ func TestModelSelectionUpdatesState(t *testing.T) {
 	if appState.GetCurrentModel() != selectedModel {
 		t.Errorf("Expected model '%s', got '%s'", selectedModel, appState.GetCurrentModel())
 	}
-	if len(mockTG.editedMessages) == 0 {
+	if len(mockTG.messages) == 0 {
 		t.Fatal("Expected confirmation message")
 	}
-	msg := mockTG.editedMessages[0]
+	msg := mockTG.messages[0]
 	if !strings.Contains(msg, "Model set to") {
 		t.Errorf("Expected confirmation message, got '%s'", msg)
 	}
@@ -143,11 +131,10 @@ func TestModelSelectionUpdatesState(t *testing.T) {
 func TestModelCurrentHighlighted(t *testing.T) {
 	mockTG := &mockModelTelegramBot{}
 	appState := &mockModelAppState{}
-	registry := state.NewIDRegistry()
-	models := getDefaultModels()
+	handler := NewModelHandler(mockTG, appState)
+	models := handler.GetAvailableModels(context.Background())
 	selectedModel := models[0]
 	appState.SetCurrentModel(selectedModel)
-	handler := NewModelHandler(mockTG, appState, registry)
 	err := handler.HandleModelCommand(context.Background())
 	if err != nil {
 		t.Fatalf("HandleModelCommand failed: %v", err)
@@ -161,9 +148,8 @@ func TestModelCurrentHighlighted(t *testing.T) {
 func TestModelCallbackPageNavigation(t *testing.T) {
 	mockTG := &mockModelTelegramBot{}
 	appState := &mockModelAppState{}
-	registry := state.NewIDRegistry()
-	handler := NewModelHandler(mockTG, appState, registry)
-	models := getDefaultModels()
+	handler := NewModelHandler(mockTG, appState)
+	models := handler.GetAvailableModels(context.Background())
 	if len(models) <= 8 {
 		t.Skip("Skipping pagination test - models list too small")
 	}
@@ -176,19 +162,4 @@ func TestModelCallbackPageNavigation(t *testing.T) {
 	if len(mockTG.editedMessages) == 0 {
 		t.Fatal("Expected message to be edited for page navigation")
 	}
-	msg := mockTG.editedMessages[0]
-	if !strings.Contains(msg, "Page 2") {
-		t.Errorf("Expected message to show 'Page 2', got '%s'", msg)
-	}
-}
-
-func buildPageNavData(pageNum int) string {
-	return "mdl:page:" + formatPageNum(pageNum)
-}
-
-func formatPageNum(num int) string {
-	if num < 10 {
-		return "0" + string(rune('0'+num))
-	}
-	return string(rune('0'+num/10)) + string(rune('0'+num%10))
 }

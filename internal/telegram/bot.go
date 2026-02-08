@@ -159,6 +159,40 @@ func (b *Bot) Start(ctx context.Context) {
 	b.bot.Start(ctx)
 }
 
+
+// StartWebhook starts the bot in webhook mode
+func (b *Bot) StartWebhook(ctx context.Context, webhookURL string, port string, secretToken string) error {
+	if port == "" {
+		port = "8443"
+	}
+
+	// Set webhook on Telegram servers
+	params := &bot.SetWebhookParams{
+		URL: webhookURL,
+	}
+	if secretToken != "" {
+		params.SecretToken = secretToken
+	}
+
+	_, err := b.bot.SetWebhook(ctx, params)
+	if err != nil {
+		return fmt.Errorf("set webhook: %w", err)
+	}
+
+	// Start webhook server (go-telegram/bot handles HTTP listener internally)
+	// Note: StartWebhook blocks until context is cancelled
+	b.bot.StartWebhook(ctx)
+	return nil
+}
+
+// StopWebhook stops webhook mode and deletes the webhook
+func (b *Bot) StopWebhook(ctx context.Context) error {
+	_, err := b.bot.DeleteWebhook(ctx, &bot.DeleteWebhookParams{})
+	if err != nil {
+		return fmt.Errorf("delete webhook: %w", err)
+	}
+	return nil
+}
 type TextHandler func(ctx context.Context, text string)
 type CommandHandler func(ctx context.Context, args string)
 type CallbackHandler func(ctx context.Context, callbackID, data string)

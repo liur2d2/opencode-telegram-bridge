@@ -115,7 +115,6 @@ func (h *ModelHandler) showModelPage(ctx context.Context, models []string, page 
 	pageModels := models[start:end]
 	currentModel := h.appState.GetCurrentModel()
 
-	// Build keyboard with pagination
 	keyboard := buildModelKeyboard(pageModels, currentModel, page, len(models), perPage)
 
 	msg := "🤖 Select a Model:\n\n"
@@ -156,8 +155,7 @@ func (h *ModelHandler) editModelPage(ctx context.Context, msgID int, models []st
 	pageModels := models[start:end]
 	currentModel := h.appState.GetCurrentModel()
 
-	// Build keyboard with pagination
-	keyboard := buildModelKeyboard(pageModels, currentModel, page, len(models), perPage)
+	_ = buildModelKeyboard(pageModels, currentModel, page, len(models), perPage)
 
 	msg := "🤖 Select a Model:\n\n"
 	for _, m := range pageModels {
@@ -175,11 +173,9 @@ func (h *ModelHandler) editModelPage(ctx context.Context, msgID int, models []st
 func buildModelKeyboard(pageModels []string, currentModel string, page int, total int, perPage int) *models.InlineKeyboardMarkup {
 	buttons := make([][]models.InlineKeyboardButton, 0)
 
-	// Model buttons in 2 columns
 	for i := 0; i < len(pageModels); i += 2 {
 		row := make([]models.InlineKeyboardButton, 0, 2)
 
-		// First button
 		text := pageModels[i]
 		if text == currentModel {
 			text = "✅ " + text
@@ -190,7 +186,6 @@ func buildModelKeyboard(pageModels []string, currentModel string, page int, tota
 			CallbackData: cbData,
 		})
 
-		// Second button (if exists)
 		if i+1 < len(pageModels) {
 			text := pageModels[i+1]
 			if text == currentModel {

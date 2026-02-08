@@ -42,6 +42,16 @@ type FileResponse struct {
 	} `json:"result"`
 }
 
+
+// mediaClient is the shared HTTP client for media downloads
+var mediaClient *http.Client = &http.Client{}
+
+// SetMediaClient sets the HTTP client used for media downloads
+func SetMediaClient(client *http.Client) {
+	if client != nil {
+		mediaClient = client
+	}
+}
 // DownloadPhoto downloads a photo from Telegram servers using the Bot API
 func DownloadPhoto(ctx context.Context, botToken, fileID string) ([]byte, error) {
 	// Step 1: Get file path using getFile API
@@ -52,8 +62,8 @@ func DownloadPhoto(ctx context.Context, botToken, fileID string) ([]byte, error)
 		return nil, fmt.Errorf("create getFile request: %w", err)
 	}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Use shared media client
+	resp, err := mediaClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("getFile request: %w", err)
 	}
@@ -81,7 +91,7 @@ func DownloadPhoto(ctx context.Context, botToken, fileID string) ([]byte, error)
 		return nil, fmt.Errorf("create file download request: %w", err)
 	}
 
-	fileDownloadResp, err := client.Do(fileReq)
+	fileDownloadResp, err := mediaClient.Do(fileReq)
 	if err != nil {
 		return nil, fmt.Errorf("download file: %w", err)
 	}
