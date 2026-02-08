@@ -2,67 +2,65 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"os"
+	"strconv"
 )
 
-// AccountConfig represents a single Telegram bot account
+// AccountConfig represents a single bot account configuration
 type AccountConfig struct {
 	Token  string `json:"token"`
 	ChatID int64  `json:"chat_id"`
-	Name   string `json:"name,omitempty"`
+	Name   string `json:"name"` // Optional label for the account
 }
 
-// ParseAccountConfigs reads and parses Telegram bot account configurations
-// Supports TELEGRAM_ACCOUNTS JSON env var for multi-account mode
-// Falls back to single-account mode with TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+// ParseAccountConfigs parses bot accounts from environment variables
+// First checks TELEGRAM_ACCOUNTS (JSON array), then falls back to single-account mode
+// Returns []AccountConfig with max 5 accounts (safety limit)
 func ParseAccountConfigs() ([]AccountConfig, error) {
-	// Check for multi-account configuration
+	// Check for multi-account JSON config
 	accountsJSON := os.Getenv("TELEGRAM_ACCOUNTS")
 	if accountsJSON != "" {
 		var accounts []AccountConfig
 		if err := json.Unmarshal([]byte(accountsJSON), &accounts); err != nil {
-			return nil, fmt.Errorf("parse TELEGRAM_ACCOUNTS JSON: %w", err)
+			return nil, err
 		}
 
+		// Enforce max 5 accounts
 		if len(accounts) > 5 {
-			return nil, fmt.Errorf("too many accounts (max 5, got %d)", len(accounts))
+			log.Printf("Warning: More than 5 accounts configured, limiting to 5")
+			accounts = accounts[:5]
 		}
 
-		// Validate all accounts have token and chatID
+		// Validate each account
 		for i, acc := range accounts {
 			if acc.Token == "" {
-				return nil, fmt.Errorf("account %d missing token", i)
+				log.Fatalf("Account %d: missing token", i)
 			}
 			if acc.ChatID == 0 {
-				return nil, fmt.Errorf("account %d missing chat_id", i)
+				log.Fatalf("Account %d: missing or invalid chat_id", i)
 			}
 		}
 
 		return accounts, nil
 	}
 
-	// Single-account fallback
-	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	// Fall back to single-account mode from env vars
+	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")
 
-	if token == "" {
-		return nil, fmt.Errorf("TELEGRAM_BOT_TOKEN not set")
+	if botToken == "" || chatIDStr == "" {
+		return nil, nil // Will be caught by main.go
 	}
 
-	if chatIDStr == "" {
-		return nil, fmt.Errorf("TELEGRAM_CHAT_ID not set")
-	}
-
-	var chatID int64
-	_, err := fmt.Sscanf(chatIDStr, "%d", &chatID)
+	chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("parse TELEGRAM_CHAT_ID: %w", err)
+		return nil, err
 	}
 
 	return []AccountConfig{
 		{
-			Token:  token,
+			Token:  botToken,
 			ChatID: chatID,
 			Name:   "default",
 		},

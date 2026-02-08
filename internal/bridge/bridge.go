@@ -897,4 +897,9 @@ func (b *Bridge) RegisterHandlers() {
 		}
 	})
 
+	routingHandler := NewRoutingHandler(b.state, b.tgBot)
+	b.tgBot.(*telegram.Bot).RegisterCommandHandler("route", func(ctx context.Context, args string) {
+		routingHandler.HandleRouteCommand(ctx, b.chatID, args)
+	})
+
 }
