@@ -22,6 +22,7 @@ type TelegramBot interface {
 	SendMessagePlain(ctx context.Context, text string) (int, error)
 	SendMessageWithKeyboard(ctx context.Context, text string, keyboard *models.InlineKeyboardMarkup) (int, error)
 	EditMessage(ctx context.Context, messageID int, text string) error
+	EditMessageWithKeyboard(ctx context.Context, messageID int, text string, keyboard *models.InlineKeyboardMarkup) error
 	EditMessagePlain(ctx context.Context, messageID int, text string) error
 	AnswerCallback(ctx context.Context, callbackID string) error
 	SendTyping(ctx context.Context) error
@@ -41,6 +42,7 @@ type OpenCodeClient interface {
 	GetMessage(sessionID string, messageID string) (*opencode.Message, error)
 	ReplyPermission(sessionID, permissionID string, response opencode.PermissionResponse) error
 	ReplyQuestion(requestID string, answers []opencode.QuestionAnswer) error
+	GetProviders() (*opencode.ProvidersResponse, error)
 }
 
 type PermissionState struct {
@@ -947,27 +949,29 @@ func (b *Bridge) RegisterHandlers() {
 		}
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("agent:", func(ctx context.Context, callbackID string, data string) {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("agent:", func(ctx context.Context, callbackID string, data string, messageID int) {
 		agentName := strings.TrimPrefix(data, "agent:")
 		b.state.SetCurrentAgent(agentName)
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 
-	modelHandler := NewModelHandler(b.tgBot, b.state)
+	modelHandler := NewModelHandler(b.tgBot, b.state, b.ocClient)
 	b.tgBot.(*telegram.Bot).RegisterCommandHandler("model", func(ctx context.Context, args string) {
+		log.Println("[BRIDGE] /model command handler called")
 		if err := modelHandler.HandleModelCommand(ctx); err != nil {
+			log.Printf("[BRIDGE] ModelHandler error: %v", err)
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
 		}
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("mdl:", func(ctx context.Context, callbackID string, data string) {
-		if err := modelHandler.HandleModelCallback(ctx, 0, data); err != nil {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("mdl:", func(ctx context.Context, callbackID string, data string, messageID int) {
+		if err := modelHandler.HandleModelCallback(ctx, messageID, data); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
 		}
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("sess:", func(ctx context.Context, callbackID string, data string) {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("sess:", func(ctx context.Context, callbackID string, data string, messageID int) {
 		sessionID := strings.TrimPrefix(data, "sess:")
 		if err := cmdHandler.HandleSwitchSession(ctx, sessionID); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
@@ -975,7 +979,7 @@ func (b *Bridge) RegisterHandlers() {
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("sesspage:", func(ctx context.Context, callbackID string, data string) {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("sesspage:", func(ctx context.Context, callbackID string, data string, messageID int) {
 		pageStr := strings.TrimPrefix(data, "sesspage:")
 		page := 0
 		fmt.Sscanf(pageStr, "%d", &page)
@@ -985,7 +989,7 @@ func (b *Bridge) RegisterHandlers() {
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("del:", func(ctx context.Context, callbackID string, data string) {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("del:", func(ctx context.Context, callbackID string, data string, messageID int) {
 		sessionID := strings.TrimPrefix(data, "del:")
 		if err := cmdHandler.HandleDeleteConfirmCallback(ctx, sessionID); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
@@ -993,7 +997,7 @@ func (b *Bridge) RegisterHandlers() {
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delpage:", func(ctx context.Context, callbackID string, data string) {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delpage:", func(ctx context.Context, callbackID string, data string, messageID int) {
 		pageStr := strings.TrimPrefix(data, "delpage:")
 		page := 0
 		fmt.Sscanf(pageStr, "%d", &page)
@@ -1003,7 +1007,7 @@ func (b *Bridge) RegisterHandlers() {
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delconfirm:", func(ctx context.Context, callbackID string, data string) {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delconfirm:", func(ctx context.Context, callbackID string, data string, messageID int) {
 		sessionID := strings.TrimPrefix(data, "delconfirm:")
 		if err := cmdHandler.HandleDeleteExecuteCallback(ctx, sessionID); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))
@@ -1011,18 +1015,23 @@ func (b *Bridge) RegisterHandlers() {
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delcancel", func(ctx context.Context, callbackID string, data string) {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("delcancel", func(ctx context.Context, callbackID string, data string, messageID int) {
 		b.tgBot.SendMessage(ctx, "❌ Deletion cancelled")
 		b.tgBot.AnswerCallback(ctx, callbackID)
 	})
 
-	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("q:", func(ctx context.Context, callbackID string, data string) {
-		parts := strings.SplitN(data, ":", 3)
-		if len(parts) < 3 {
+	b.tgBot.(*telegram.Bot).RegisterCallbackHandler("q:", func(ctx context.Context, callbackID string, data string, messageID int) {
+		// data format: "q:{registryID}:{questionIdx}:{action}"
+		// e.g., "q:2:0:0" or "q:2:0:submit"
+		parts := strings.SplitN(data, ":", 4)
+		if len(parts) < 4 {
+			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Invalid callback data: %s", data))
+			b.tgBot.AnswerCallback(ctx, callbackID)
 			return
 		}
-		shortKey := parts[1]
-		action := strings.Join(parts[2:], ":")
+		// Reconstruct shortKey from parts 0,1,2: "q:2:0"
+		shortKey := fmt.Sprintf("%s:%s:%s", parts[0], parts[1], parts[2])
+		action := parts[3]
 
 		if err := b.HandleQuestionCallback(ctx, shortKey, action); err != nil {
 			b.tgBot.SendMessage(ctx, fmt.Sprintf("❌ Error: %v", err))

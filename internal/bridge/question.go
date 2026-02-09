@@ -14,6 +14,9 @@ func (b *Bridge) handleQuestionAsked(event opencode.EventQuestionAsked) error {
 	ctx := context.Background()
 	props := event.Properties
 
+	fmt.Printf("[QUESTION] Received question.asked event, requestID=%s, sessionID=%s, questions=%d\n",
+		props.ID, props.SessionID, len(props.Questions))
+
 	var msgBuilder strings.Builder
 	msgBuilder.WriteString("🤔 OpenCode has questions:\n\n")
 
@@ -36,6 +39,9 @@ func (b *Bridge) handleQuestionAsked(event opencode.EventQuestionAsked) error {
 	firstQ := props.Questions[0]
 	shortKey := b.registry.Register(props.ID, "q", fmt.Sprintf("%d", 0))
 
+	fmt.Printf("[QUESTION] First question: %s, options=%d, shortKey=%s\n",
+		firstQ.Question, len(firstQ.Options), shortKey)
+
 	multiple := firstQ.Multiple != nil && *firstQ.Multiple
 	custom := firstQ.Custom != nil && *firstQ.Custom
 	tgQuestion := telegram.QuestionInfo{
@@ -56,8 +62,11 @@ func (b *Bridge) handleQuestionAsked(event opencode.EventQuestionAsked) error {
 
 	messageID, err := b.tgBot.SendMessageWithKeyboard(ctx, msgBuilder.String(), keyboard)
 	if err != nil {
+		fmt.Printf("[QUESTION] Error sending question keyboard: %v\n", err)
 		return fmt.Errorf("failed to send question: %w", err)
 	}
+
+	fmt.Printf("[QUESTION] Question sent successfully, messageID=%d\n", messageID)
 
 	state := &QuestionState{
 		RequestID:       props.ID,
@@ -74,9 +83,19 @@ func (b *Bridge) handleQuestionAsked(event opencode.EventQuestionAsked) error {
 }
 
 func (b *Bridge) HandleQuestionCallback(ctx context.Context, shortKey, action string) error {
+	fmt.Printf("[QUESTION] HandleQuestionCallback called with shortKey=%s, action=%s\n", shortKey, action)
+
+	// Debug: list all stored keys
+	var storedKeys []string
+	b.questions.Range(func(key, value interface{}) bool {
+		storedKeys = append(storedKeys, key.(string))
+		return true
+	})
+	fmt.Printf("[QUESTION] Currently stored keys: %v\n", storedKeys)
+
 	val, ok := b.questions.Load(shortKey)
 	if !ok {
-		return fmt.Errorf("question state not found")
+		return fmt.Errorf("question state not found (shortKey=%s, stored keys=%v)", shortKey, storedKeys)
 	}
 	state := val.(*QuestionState)
 

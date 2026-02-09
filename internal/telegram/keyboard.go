@@ -24,18 +24,16 @@ type QuestionInfo struct {
 }
 
 // BuildQuestionKeyboard builds an inline keyboard for a question
-// Each option becomes a button with callback_data: q:{shortID}:{optionIndex}
-func BuildQuestionKeyboard(info QuestionInfo, requestID string) *models.InlineKeyboardMarkup {
-	// Generate a short ID from the request ID to keep callback_data under 64 bytes
-	shortID := generateShortID(requestID)
-
+// Each option becomes a button with callback_data: {shortKey}:{optionIndex}
+// shortKey is expected to be the short key from registry (e.g., "q:2:0")
+func BuildQuestionKeyboard(info QuestionInfo, shortKey string) *models.InlineKeyboardMarkup {
 	var rows [][]models.InlineKeyboardButton
 
 	// Add a button for each option
 	for i, option := range info.Options {
 		button := models.InlineKeyboardButton{
 			Text:         option.Label,
-			CallbackData: fmt.Sprintf("q:%s:%d", shortID, i),
+			CallbackData: fmt.Sprintf("%s:%d", shortKey, i),
 		}
 		rows = append(rows, []models.InlineKeyboardButton{button})
 	}
@@ -44,7 +42,7 @@ func BuildQuestionKeyboard(info QuestionInfo, requestID string) *models.InlineKe
 	if info.Multiple {
 		submitButton := models.InlineKeyboardButton{
 			Text:         "✅ Submit",
-			CallbackData: fmt.Sprintf("q:%s:submit", shortID),
+			CallbackData: fmt.Sprintf("%s:submit", shortKey),
 		}
 		rows = append(rows, []models.InlineKeyboardButton{submitButton})
 	}
@@ -53,7 +51,7 @@ func BuildQuestionKeyboard(info QuestionInfo, requestID string) *models.InlineKe
 	if info.Custom {
 		customButton := models.InlineKeyboardButton{
 			Text:         "✏️ Type custom...",
-			CallbackData: fmt.Sprintf("q:%s:custom", shortID),
+			CallbackData: fmt.Sprintf("%s:custom", shortKey),
 		}
 		rows = append(rows, []models.InlineKeyboardButton{customButton})
 	}

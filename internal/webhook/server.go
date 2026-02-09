@@ -179,6 +179,35 @@ func (s *Server) convertToSSEEvent(webhook WebhookEvent) (*opencode.Event, error
 			Timestamp: time.Unix(0, webhook.Timestamp*1e6),
 		}, nil
 
+	case "question.asked":
+		var evt opencode.EventQuestionAsked
+		if err := json.Unmarshal(webhook.Data, &evt); err != nil {
+			return nil, fmt.Errorf("unmarshal question.asked: %w", err)
+		}
+
+		log.Printf("[WEBHOOK] question.asked received, requestID=%s, sessionID=%s, questions=%d",
+			evt.Properties.ID, evt.Properties.SessionID, len(evt.Properties.Questions))
+
+		return &opencode.Event{
+			Type:       "question.asked",
+			Properties: &evt,
+			Timestamp:  time.Unix(0, webhook.Timestamp*1e6),
+		}, nil
+
+	case "permission.asked":
+		var evt opencode.EventPermissionAsked
+		if err := json.Unmarshal(webhook.Data, &evt); err != nil {
+			return nil, fmt.Errorf("unmarshal permission.asked: %w", err)
+		}
+
+		log.Printf("[WEBHOOK] permission.asked received, permissionID=%s", evt.Properties.ID)
+
+		return &opencode.Event{
+			Type:       "permission.asked",
+			Properties: &evt,
+			Timestamp:  time.Unix(0, webhook.Timestamp*1e6),
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unknown event type: %s", webhook.Type)
 	}
