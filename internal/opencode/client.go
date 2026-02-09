@@ -515,3 +515,30 @@ func (c *Client) GetMessage(sessionID string, messageID string) (*Message, error
 
 	return &message, nil
 }
+
+func (c *Client) GetProviders() (*ProvidersResponse, error) {
+	url := c.config.BaseURL + "/config/providers"
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create get providers request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get providers: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get providers failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var providers ProvidersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&providers); err != nil {
+		return nil, fmt.Errorf("decode providers: %w", err)
+	}
+
+	return &providers, nil
+}

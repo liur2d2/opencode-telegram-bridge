@@ -253,3 +253,37 @@ type EventSessionError struct {
 		Error     interface{} `json:"error,omitempty"`
 	} `json:"properties"`
 }
+
+// Provider represents a model provider
+type Provider struct {
+	ID     string           `json:"id"`
+	Name   string           `json:"name"`
+	Models map[string]Model `json:"models"`
+}
+
+// Model represents a model configuration
+type Model struct {
+	ID     string     `json:"id"`
+	Name   string     `json:"name"`
+	Cost   ModelCost  `json:"cost"`
+	Limit  ModelLimit `json:"limit"`
+	Status string     `json:"status"`
+}
+
+// ModelCost represents model pricing
+type ModelCost struct {
+	Input  float64 `json:"input"`
+	Output float64 `json:"output"`
+}
+
+// ModelLimit represents model limits
+type ModelLimit struct {
+	Context int `json:"context"`
+	Output  int `json:"output"`
+}
+
+// ProvidersResponse represents the response from /config/providers
+type ProvidersResponse struct {
+	Providers []Provider        `json:"providers"`
+	Default   map[string]string `json:"default"`
+}

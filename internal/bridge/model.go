@@ -2,14 +2,13 @@ package bridge
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	"log"
 	"sort"
 	"strings"
 
 	"github.com/go-telegram/bot/models"
+	"github.com/user/opencode-telegram/internal/opencode"
 )
 
 // modelTelegramBot interface for sending messages and keyboards
@@ -17,6 +16,7 @@ type modelTelegramBot interface {
 	SendMessage(ctx context.Context, text string) (int, error)
 	SendMessageWithKeyboard(ctx context.Context, text string, keyboard *models.InlineKeyboardMarkup) (int, error)
 	EditMessage(ctx context.Context, msgID int, text string) error
+	EditMessageWithKeyboard(ctx context.Context, msgID int, text string, keyboard *models.InlineKeyboardMarkup) error
 	AnswerCallback(ctx context.Context, callbackID string) error
 }
 
@@ -26,24 +26,33 @@ type modelAppState interface {
 	GetCurrentModel() string
 }
 
+// modelOpenCodeClient for OpenCode API access
+type modelOpenCodeClient interface {
+	GetProviders() (*opencode.ProvidersResponse, error)
+}
+
 // ModelHandler manages model selection
 type ModelHandler struct {
 	tgBot    modelTelegramBot
 	appState modelAppState
+	ocClient modelOpenCodeClient
 }
 
 // NewModelHandler creates a new ModelHandler
-func NewModelHandler(tgBot modelTelegramBot, appState modelAppState) *ModelHandler {
+func NewModelHandler(tgBot modelTelegramBot, appState modelAppState, ocClient modelOpenCodeClient) *ModelHandler {
 	return &ModelHandler{
 		tgBot:    tgBot,
 		appState: appState,
+		ocClient: ocClient,
 	}
 }
 
 // HandleModelCommand processes the /model command
 // Shows available models as paginated Inline Keyboard
 func (h *ModelHandler) HandleModelCommand(ctx context.Context) error {
+	log.Printf("[MODEL] HandleModelCommand called")
 	models := h.GetAvailableModels(ctx)
+	log.Printf("[MODEL] Got %d models to display", len(models))
 
 	// Show first page
 	return h.showModelPage(ctx, models, 0)
@@ -155,7 +164,7 @@ func (h *ModelHandler) editModelPage(ctx context.Context, msgID int, models []st
 	pageModels := models[start:end]
 	currentModel := h.appState.GetCurrentModel()
 
-	_ = buildModelKeyboard(pageModels, currentModel, page, len(models), perPage)
+	keyboard := buildModelKeyboard(pageModels, currentModel, page, len(models), perPage)
 
 	msg := "🤖 Select a Model:\n\n"
 	for _, m := range pageModels {
@@ -166,7 +175,7 @@ func (h *ModelHandler) editModelPage(ctx context.Context, msgID int, models []st
 		msg += fmt.Sprintf("%s %s\n", prefix, m)
 	}
 
-	return h.tgBot.EditMessage(ctx, msgID, msg)
+	return h.tgBot.EditMessageWithKeyboard(ctx, msgID, msg, keyboard)
 }
 
 // buildModelKeyboard creates an Inline Keyboard with model buttons and pagination
@@ -243,13 +252,33 @@ func isValidModel(model string, models []string) bool {
 
 // GetAvailableModels returns the list of available models
 func (h *ModelHandler) GetAvailableModels(ctx context.Context) []string {
-	// Try to load from config first
-	if models, err := loadModelsFromConfig(); err == nil && len(models) > 0 {
-		sort.Strings(models)
-		return models
+	log.Printf("[MODEL] GetAvailableModels called")
+	providers, err := h.ocClient.GetProviders()
+	if err != nil {
+		log.Printf("[MODEL] Error fetching providers: %v", err)
+	} else if providers == nil {
+		log.Printf("[MODEL] Providers response is nil")
+	} else {
+		log.Printf("[MODEL] Got %d providers", len(providers.Providers))
+		var models []string
+		for _, provider := range providers.Providers {
+			log.Printf("[MODEL] Provider: %s, models: %d", provider.Name, len(provider.Models))
+			for modelID, model := range provider.Models {
+				if model.Status == "active" {
+					displayName := fmt.Sprintf("%s (%s)", modelID, provider.Name)
+					models = append(models, displayName)
+				}
+			}
+		}
+		if len(models) > 0 {
+			log.Printf("[MODEL] Returning %d models from API", len(models))
+			sort.Strings(models)
+			return models
+		}
+		log.Printf("[MODEL] No active models found, using fallback")
 	}
 
-	// Hardcoded fallback
+	log.Printf("[MODEL] Using hardcoded fallback")
 	return []string{
 		"claude-sonnet-4-20250514",
 		"claude-opus-4-20250514",
@@ -259,32 +288,4 @@ func (h *ModelHandler) GetAvailableModels(ctx context.Context) []string {
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
 	}
-}
-
-// loadModelsFromConfig loads model list from ~/.config/opencode/config.json
-func loadModelsFromConfig() ([]string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-
-	configPath := filepath.Join(homeDir, ".config", "opencode", "config.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var config struct {
-		Models []string `json:"models"`
-	}
-
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-
-	if len(config.Models) > 0 {
-		return config.Models, nil
-	}
-
-	return nil, fmt.Errorf("no models in config")
 }

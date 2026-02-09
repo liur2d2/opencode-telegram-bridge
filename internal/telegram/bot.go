@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"log"
+
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -116,6 +118,13 @@ func (b *Bot) SendMessagePlain(ctx context.Context, text string) (int, error) {
 }
 
 func (b *Bot) SendMessageWithKeyboard(ctx context.Context, text string, keyboard *models.InlineKeyboardMarkup) (int, error) {
+	log.Printf("[SEND_KEYBOARD] Attempting to send message with keyboard")
+	log.Printf("[SEND_KEYBOARD] ChatID: %d", b.chatID)
+	log.Printf("[SEND_KEYBOARD] Text length: %d", len(text))
+	if keyboard != nil {
+		log.Printf("[SEND_KEYBOARD] Keyboard rows: %d", len(keyboard.InlineKeyboard))
+	}
+
 	msg, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      b.chatID,
 		Text:        text,
@@ -123,9 +132,11 @@ func (b *Bot) SendMessageWithKeyboard(ctx context.Context, text string, keyboard
 		ParseMode:   models.ParseModeHTML,
 	})
 	if err != nil {
+		log.Printf("[SEND_KEYBOARD] Error: %v", err)
 		return 0, fmt.Errorf("failed to send message with keyboard: %w", err)
 	}
 
+	log.Printf("[SEND_KEYBOARD] Success! MessageID: %d", msg.ID)
 	return msg.ID, nil
 }
 
@@ -138,6 +149,21 @@ func (b *Bot) EditMessage(ctx context.Context, messageID int, text string) error
 	})
 	if err != nil {
 		return fmt.Errorf("failed to edit message: %w", err)
+	}
+
+	return nil
+}
+
+func (b *Bot) EditMessageWithKeyboard(ctx context.Context, messageID int, text string, keyboard *models.InlineKeyboardMarkup) error {
+	_, err := b.bot.EditMessageText(ctx, &bot.EditMessageTextParams{
+		ChatID:      b.chatID,
+		MessageID:   messageID,
+		Text:        text,
+		ParseMode:   models.ParseModeHTML,
+		ReplyMarkup: keyboard,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to edit message with keyboard: %w", err)
 	}
 
 	return nil
@@ -257,7 +283,7 @@ func (b *Bot) StopWebhook(ctx context.Context) error {
 
 type TextHandler func(ctx context.Context, text string)
 type CommandHandler func(ctx context.Context, args string)
-type CallbackHandler func(ctx context.Context, callbackID, data string)
+type CallbackHandler func(ctx context.Context, callbackID, data string, messageID int)
 
 func (b *Bot) RegisterTextHandler(handler TextHandler) {
 	b.bot.RegisterHandlerMatchFunc(func(update *models.Update) bool {
@@ -308,7 +334,13 @@ func (b *Bot) RegisterCallbackHandler(prefix string, handler CallbackHandler) {
 
 		b.trackUpdateID(update)
 		b.AnswerCallback(ctx, update.CallbackQuery.ID)
-		handler(ctx, update.CallbackQuery.ID, update.CallbackQuery.Data)
+
+		msgID := 0
+		if update.CallbackQuery.Message.Message != nil {
+			msgID = update.CallbackQuery.Message.Message.ID
+		}
+
+		handler(ctx, update.CallbackQuery.ID, update.CallbackQuery.Data, msgID)
 	})
 }
 
